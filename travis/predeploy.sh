@@ -5,46 +5,48 @@
 set -euxo pipefail
 
 BUILD_CONFIG=${BUILD_CONFIG:-release}
-PLATFORM=${1:-$TRAVIS_OS_NAME}
+TARGET_OS=${TARGET_OS:-$TRAVIS_OS_NAME}
+PLATFORM=${1:-$TARGET_OS}
+ARCH=${ARCH:-""}
 
 function copy_if_exists {
-    if [[ -f bin/$BUILD_CONFIG/$1 ]]; then
-        cp bin/$BUILD_CONFIG/$1 deploy
+    if [[ -f bin/$ARCH/$BUILD_CONFIG/$1 ]]; then
+        cp bin/$ARCH/$BUILD_CONFIG/$1 deploy
     fi
 }
 
 function compress_if_exist {
-    if [[ -f bin/$BUILD_CONFIG/$1 ]]; then
+    if [[ -f bin/$ARCH/$BUILD_CONFIG/$1 ]]; then
 		./upx deploy/$1 -o deploy/compressed-$1
     fi
 }
 
 function strip_if_exists {
-    if [[ "$BUILD_CONFIG" == "release" ]] && [[ -f bin/$BUILD_CONFIG/$1 ]]; then
-        strip bin/$BUILD_CONFIG/$1
+    if [[ "$BUILD_CONFIG" == "release" ]] && [[ -f bin/$ARCH/$BUILD_CONFIG/$1 ]]; then
+        strip bin/$ARCH/$BUILD_CONFIG/$1
     fi
 }
 
 function bundle_if_exists {
-    if [[ -f bin/$BUILD_CONFIG/$1.app ]]; then
+    if [[ -f bin/$ARCH/$BUILD_CONFIG/$1.app ]]; then
         mkdir -p deploy/$1.app/Contents/MacOS
         # Binary seems to be incorrectly named with the current premake
-        cp bin/$BUILD_CONFIG/$1.app deploy/$1.app/Contents/MacOS/$1
+        cp bin/$ARCH/$BUILD_CONFIG/$1.app deploy/$1.app/Contents/MacOS/$1
         # dylibbundler -x deploy/$1.app/Contents/MacOS/$1 -b -d deploy/$1.app/Contents/Frameworks/ -p @executable_path/../Frameworks/ -cd
 
         mkdir -p deploy/$1.app/Contents/Resources
         cp gframe/ygopro.icns deploy/$1.app/Contents/Resources/edopro.icns
         cp gframe/Info.plist deploy/$1.app/Contents/Info.plist
         # Not strictly necessary but avoids text-editor-level tampering
-        plutil -convert binary1 deploy/$1.app/Contents/Info.plist
+        # plutil -convert binary1 deploy/$1.app/Contents/Info.plist
         # Writes to a binary plist
         # defaults write "$PWD/deploy/$1.app/Contents/Info.plist" "CFBundleIconFile" "edopro.icns"
         # defaults write "$PWD/deploy/$1.app/Contents/Info.plist" "CFBundleIdentifier" "io.github.edo9300.$1"
 
-        if [[ -f bin/$BUILD_CONFIG/discord-launcher ]]; then
+        if [[ -f bin/$ARCH/$BUILD_CONFIG/discord-launcher ]]; then
             mkdir -p deploy/$1.app/Contents/MacOS/discord-launcher.app/Contents/MacOS
             # Binary is named correctly and does not require external dylibs
-            cp bin/$BUILD_CONFIG/discord-launcher deploy/$1.app/Contents/MacOS/discord-launcher.app/Contents/MacOS
+            cp bin/$ARCH/$BUILD_CONFIG/discord-launcher deploy/$1.app/Contents/MacOS/discord-launcher.app/Contents/MacOS
             defaults write "$PWD/deploy/$1.app/Contents/MacOS/discord-launcher.app/Contents/Info.plist" "CFBundleIdentifier" "io.github.edo9300.$1.discord"
         fi
     fi
@@ -53,6 +55,7 @@ function bundle_if_exists {
 mkdir -p deploy
 
 if [[ "$PLATFORM" == "windows" ]]; then
+	ARCH="."
 	copy_if_exists ocgcore.dll
 	copy_if_exists ygopro.exe
 	compress_if_exist ygopro.exe

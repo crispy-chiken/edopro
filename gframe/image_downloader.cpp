@@ -1,5 +1,4 @@
 #include "image_downloader.h"
-#include <fstream>
 #include <curl/curl.h>
 #include <fmt/format.h>
 #include <cerrno>
@@ -7,12 +6,7 @@
 #include "logging.h"
 #include "utils.h"
 #include "game_config.h"
-
-#ifdef UNICODE
-#define fileopen(file, mode) _wfopen(file, L##mode)
-#else
-#define fileopen(file, mode) fopen(file, mode)
-#endif
+#include "file_stream.h"
 
 namespace ygo {
 
@@ -23,14 +17,16 @@ struct curl_payload {
 };
 
 ImageDownloader::ImageDownloader() : stop_threads(false) {
-	for(auto& thread : download_threads)
-		thread = std::thread(&ImageDownloader::DownloadPic, this);
+	download_threads.reserve(gGameConfig->imageDownloadThreads);
+	for(int i = 0; i < gGameConfig->imageLoadThreads; ++i)
+		download_threads.emplace_back(&ImageDownloader::DownloadPic, this);
 }
 ImageDownloader::~ImageDownloader() {
-	std::unique_lock<std::mutex> lck(pic_download);
-	stop_threads = true;
-	cv.notify_all();
-	lck.unlock();
+	{
+		std::lock_guard<std::mutex> lck(pic_download);
+		stop_threads = true;
+		cv.notify_all();
+	}
 	for(auto& thread : download_threads)
 		thread.join();
 }
@@ -92,6 +88,8 @@ void ImageDownloader::DownloadPic() {
 	curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, write_data);
 	curl_easy_setopt(curl, CURLOPT_WRITEDATA, &payload);
 	curl_easy_setopt(curl, CURLOPT_FAILONERROR, 1);
+	curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT, 30L);
+	curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 1);
 	if(gGameConfig->ssl_certificate_path.size() && Utils::FileExists(Utils::ToPathString(gGameConfig->ssl_certificate_path)))
 		curl_easy_setopt(curl, CURLOPT_CAINFO, gGameConfig->ssl_certificate_path.data());
 #ifdef _WIN32

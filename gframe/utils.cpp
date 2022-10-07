@@ -1,6 +1,7 @@
 #include "utils.h"
 #include <cmath> // std::round
 #include <fstream>
+#include "config.h"
 #ifdef _WIN32
 #define WIN32_LEAN_AND_MEAN
 #include <Windows.h>
@@ -14,18 +15,19 @@
 #include <unistd.h>
 #include <pthread.h>
 using Stat = struct stat;
-#ifdef __ANDROID__
-#include "Android/porting_android.h"
-#else
+#include "porting.h"
+#ifndef __ANDROID__
 #include <sys/wait.h>
 #endif //__ANDROID__
 #if defined(__linux__)
 #include <sys/sendfile.h>
 #include <fcntl.h>
 #elif defined(__APPLE__)
+#ifdef EDOPRO_MACOS
 #import <CoreFoundation/CoreFoundation.h>
 #include <mach-o/dyld.h>
 #include <CoreServices/CoreServices.h>
+#endif //EDOPRO_MACOS
 #include <copyfile.h>
 #endif //__linux__
 #endif //_WIN32
@@ -33,11 +35,13 @@ using Stat = struct stat;
 #include <IFileSystem.h>
 #include <fmt/format.h>
 #include <IOSOperator.h>
-#include "config.h"
 #include "bufferio.h"
+#include "file_stream.h"
 #if defined(__MINGW32__) && defined(UNICODE)
-#include <fcntl.h>
-#include <ext/stdio_filebuf.h>
+constexpr FileMode FileStream::in;
+constexpr FileMode FileStream::binary;
+constexpr FileMode FileStream::out;
+constexpr FileMode FileStream::trunc;
 #endif
 
 #if defined(_WIN32)
@@ -147,15 +151,21 @@ namespace ygo {
 		return SetLastErrorStringIfFailed(mkdir(path.data(), 0777) == 0 || errno == EEXIST);
 #endif
 	}
-#ifdef __linux__
 	bool Utils::FileCopyFD(int source, int destination) {
+#if defined(__linux__)
 		off_t bytesCopied = 0;
-		Stat fileinfo = { 0 };
+		Stat fileinfo{};
 		fstat(source, &fileinfo);
 		int result = sendfile(destination, source, &bytesCopied, fileinfo.st_size);
 		return SetLastErrorStringIfFailed(result != -1);
-	}
+#elif defined(__APPLE__)
+		return SetLastErrorStringIfFailed(fcopyfile(source, destination, 0, COPYFILE_ALL) == 0);
+#else
+		(void)source;
+		(void)destination;
+		return false;
 #endif
+	}
 	bool Utils::FileCopy(epro::path_stringview source, epro::path_stringview destination) {
 		if(source == destination)
 			return false;
@@ -167,7 +177,9 @@ namespace ygo {
 			SetLastError();
 			return false;
 		}
-		if((output = creat(destination.data(), 0660)) == -1) {
+		Stat fileinfo{};
+		fstat(input, &fileinfo);
+		if((output = creat(destination.data(), fileinfo.st_mode)) == -1) {
 			SetLastError();
 			close(input);
 			return false;
@@ -211,6 +223,8 @@ namespace ygo {
 	bool Utils::SetWorkingDirectory(epro::path_stringview newpath) {
 #ifdef _WIN32
 		bool res = SetLastErrorStringIfFailed(SetCurrentDirectory(newpath.data()));
+#elif defined(EDOPRO_IOS)
+		bool res = porting::changeWorkDir(newpath.data()) == 1;
 #else
 		bool res = SetLastErrorStringIfFailed(chdir(newpath.data()) == 0);
 #endif
@@ -497,15 +511,7 @@ namespace ygo {
 				int percentage = 0;
 				auto reader = archive->createAndOpenFile(i);
 				if(reader) {
-#if defined(__MINGW32__) && defined(UNICODE)
-					auto fd = _wopen(fmt::format(EPRO_TEXT("{}/{}"), dest, filename).data(), _O_WRONLY | _O_BINARY);
-					if(fd == -1)
-						return false;
-					__gnu_cxx::stdio_filebuf<char> b(fd, std::ios::out);
-					std::ostream out(&b);
-#else
-					std::ofstream out(fmt::format(EPRO_TEXT("{}/{}"), dest, filename), std::ofstream::binary);
-#endif
+					FileStream out{ fmt::format(EPRO_TEXT("{}/{}"), dest, filename), FileStream::out | FileStream::binary };
 					int r, rx = reader->getSize();
 					if(payload) {
 						payload->is_new = true;

@@ -21,6 +21,7 @@
 #include <IGUIComboBox.h>
 #include <IGUIContextMenu.h>
 #include <IGUIEditBox.h>
+#include <IGUIScrollBar.h>
 #include <IGUIStaticText.h>
 #include <IGUITabControl.h>
 #include <IGUITable.h>
@@ -50,20 +51,20 @@ static void UpdateDeck() {
 }
 static void LoadReplay() {
 	auto& replay = ReplayMode::cur_replay;
-	if(open_file) {
+	if(std::exchange(open_file, false)) {
 		bool res = replay.OpenReplay(open_file_name);
-		open_file = false;
-		if(!res || (replay.pheader.id == REPLAY_YRP1 && !mainGame->coreloaded))
+		if(!res || (replay.IsOldReplayMode() && (!mainGame->coreloaded || !replay.CanBePlayedInOldMode())))
 			return;
 	} else {
-		if(mainGame->lstReplayList->getSelected() == -1)
+		const auto& list = mainGame->lstReplayList;
+		const auto selected = list->getSelected();
+		if(selected == -1)
 			return;
-		if(!replay.OpenReplay(Utils::ToPathString(mainGame->lstReplayList->getListItem(mainGame->lstReplayList->getSelected(), true))) || (replay.pheader.id == REPLAY_YRP1 && !mainGame->coreloaded))
+		const auto path = Utils::ToPathString(list->getListItem(selected, true));
+		if(!replay.OpenReplay(path) || (replay.IsOldReplayMode() && (!mainGame->coreloaded || !replay.CanBePlayedInOldMode())))
 			return;
 	}
 	if(mainGame->chkYrp->isChecked() && !replay.yrp)
-		return;
-	if(replay.pheader.id == REPLAY_YRP1 && (!mainGame->coreloaded || !(replay.pheader.flag & REPLAY_NEWREPLAY)))
 		return;
 	replay.Rewind();
 	mainGame->ClearCardInfo();
@@ -85,7 +86,7 @@ static void LoadReplay() {
 	catch(...) { start_turn = 0; }
 	if(start_turn == 1)
 		start_turn = 0;
-	ReplayMode::StartReplay(start_turn, (mainGame->chkYrp->isChecked() || replay.pheader.id == REPLAY_YRP1));
+	ReplayMode::StartReplay(start_turn, (mainGame->chkYrp->isChecked() || replay.IsOldReplayMode()));
 }
 static inline void TriggerEvent(irr::gui::IGUIElement* target, irr::gui::EGUI_EVENT_TYPE type) {
 	irr::SEvent event;
@@ -115,8 +116,6 @@ bool MenuHandler::OnEvent(const irr::SEvent& event) {
 		   && prev_operation != ACTION_TRY_WAYLAND
 #endif
 		   )
-			break;
-		if(mainGame->wCustomRules->isVisible() && id != BUTTON_CUSTOM_RULE_OK && ((id < CHECKBOX_OBSOLETE || id > TCG_SEGOC_FIRSTTRIGGER) && id != COMBOBOX_DUEL_RULE))
 			break;
 		if(mainGame->wQuery->isVisible() && id != BUTTON_YES && id != BUTTON_NO) {
 			mainGame->wQuery->getParent()->bringToFront(mainGame->wQuery);
@@ -254,60 +253,6 @@ bool MenuHandler::OnEvent(const irr::SEvent& event) {
 				mainGame->HideElement(mainGame->wRules);
 				break;
 			}
-			case BUTTON_CUSTOM_RULE: {
-				const auto tcg = mainGame->duel_param & DUEL_TCG_SEGOC_FIRSTTRIGGER;
-#define CHECK(MR) case (MR - 1):{ mainGame->duel_param = DUEL_MODE_MR##MR; mainGame->forbiddentypes = DUEL_MODE_MR##MR##_FORB; break; }
-				switch (mainGame->cbDuelRule->getSelected()) {
-				CHECK(1)
-				CHECK(2)
-				CHECK(3)
-				CHECK(4)
-				CHECK(5)
-				case 5:	{
-					mainGame->duel_param = DUEL_MODE_SPEED;
-					mainGame->forbiddentypes = 0;
-					break;
-				}
-				case 6:	{
-					mainGame->duel_param = DUEL_MODE_RUSH;
-					mainGame->forbiddentypes = 0;
-					break;
-				}
-				case 7:	{
-					mainGame->duel_param = DUEL_MODE_GOAT;
-					mainGame->forbiddentypes = DUEL_MODE_MR1_FORB;
-					break;
-				}
-				}
-#undef CHECK
-				mainGame->duel_param |= tcg;
-				for (int i = 0; i < sizeofarr(mainGame->chkCustomRules); ++i) {
-					bool set = false;
-					if(i == 19)
-						set = mainGame->duel_param & DUEL_USE_TRAPS_IN_NEW_CHAIN;
-					else if(i == 20)
-						set = mainGame->duel_param & DUEL_6_STEP_BATLLE_STEP;
-					else if(i == 21)
-						set = mainGame->duel_param & DUEL_TRIGGER_WHEN_PRIVATE_KNOWLEDGE;
-					else if(i > 21)
-						set = mainGame->duel_param & 0x100ULL << (i - 3);
-					else
-						set = mainGame->duel_param & 0x100ULL << i;
-					mainGame->chkCustomRules[i]->setChecked(set);
-					if(i == 3)
-						mainGame->chkCustomRules[4]->setEnabled(set);
-				}
-				static constexpr uint32_t limits[]{ TYPE_FUSION, TYPE_SYNCHRO, TYPE_XYZ, TYPE_PENDULUM, TYPE_LINK };
-				for (int i = 0; i < sizeofarr(mainGame->chkTypeLimit); ++i)
-						mainGame->chkTypeLimit[i]->setChecked(mainGame->forbiddentypes & limits[i]);
-				mainGame->PopupElement(mainGame->wCustomRules);
-				break;
-			}
-			case BUTTON_CUSTOM_RULE_OK: {
-				mainGame->UpdateDuelParam();
-				mainGame->HideElement(mainGame->wCustomRules);
-				break;
-			}
 			case BUTTON_HOST_CONFIRM: {
 				DuelClient::is_local_host = false;
 				if(mainGame->isHostingOnline) {
@@ -374,17 +319,14 @@ bool MenuHandler::OnEvent(const irr::SEvent& event) {
 				break;
 			}
 			case BUTTON_HP_READY: {
-				bool check = false;
-				if(!mainGame->cbDeckSelect2->isVisible())
-					check = (mainGame->cbDeckSelect->getSelected() == -1 || !gdeckManager->LoadDeck(Utils::ToPathString(mainGame->cbDeckSelect->getItem(mainGame->cbDeckSelect->getSelected()))));
-				else
-					check = (mainGame->cbDeckSelect->getSelected() == -1 || mainGame->cbDeckSelect2->getSelected() == -1 || !gdeckManager->LoadDeckDouble(Utils::ToPathString(mainGame->cbDeckSelect->getItem(mainGame->cbDeckSelect->getSelected())), Utils::ToPathString(mainGame->cbDeckSelect2->getItem(mainGame->cbDeckSelect2->getSelected()))));
-				if(check)
+				const auto selected = mainGame->cbDeckSelect->getSelected();
+				if(selected == -1)
+					break;
+				if(!mainGame->deckBuilder.SetCurrentDeckFromFile(Utils::ToPathString(mainGame->cbDeckSelect->getItem(selected))))
 					break;
 				UpdateDeck();
 				DuelClient::SendPacketToServer(CTOS_HS_READY);
 				mainGame->cbDeckSelect->setEnabled(false);
-				mainGame->cbDeckSelect2->setEnabled(false);
 				if(mainGame->dInfo.team1 + mainGame->dInfo.team2 > 2)
 					mainGame->btnHostPrepDuelist->setEnabled(false);
 				break;
@@ -392,7 +334,6 @@ bool MenuHandler::OnEvent(const irr::SEvent& event) {
 			case BUTTON_HP_NOTREADY: {
 				DuelClient::SendPacketToServer(CTOS_HS_NOTREADY);
 				mainGame->cbDeckSelect->setEnabled(true);
-				mainGame->cbDeckSelect2->setEnabled(true);
 				if(mainGame->dInfo.team1 + mainGame->dInfo.team2 > 2)
 					mainGame->btnHostPrepDuelist->setEnabled(true);
 				break;
@@ -525,7 +466,7 @@ bool MenuHandler::OnEvent(const irr::SEvent& event) {
 					break;
 				const auto replay_name = Utils::GetFileName(ReplayMode::cur_replay.GetReplayName());
 				for(size_t i = 0; i < decks.size(); i++) {
-					gdeckManager->SaveDeck(fmt::format(EPRO_TEXT("{} player{:02} {}"), replay_name, i, sanitize(Utils::ToPathString(players[i]))), decks[i].main_deck, decks[i].extra_deck, cardlist_type());
+					DeckManager::SaveDeck(fmt::format(EPRO_TEXT("{} player{:02} {}"), replay_name, i, sanitize(Utils::ToPathString(players[i]))), decks[i].main_deck, decks[i].extra_deck, cardlist_type());
 				}
 				mainGame->stACMessage->setText(gDataManager->GetSysString(1367).data());
 				mainGame->PopupElement(mainGame->wACMessage, 20);
@@ -591,13 +532,13 @@ bool MenuHandler::OnEvent(const irr::SEvent& event) {
 			}
 			case BUTTON_DECK_EDIT: {
 				mainGame->RefreshDeck(mainGame->cbDBDecks);
-				if(open_file && gdeckManager->LoadDeck(open_file_name, nullptr, true)) {
+				if(open_file && mainGame->deckBuilder.SetCurrentDeckFromFile(open_file_name, true)) {
 					auto name = Utils::GetFileName(open_file_name);
 					mainGame->ebDeckname->setText(Utils::ToUnicodeIfNeeded(name).data());
 					mainGame->cbDBDecks->setSelected(-1);
 					open_file = false;
 				} else if(mainGame->cbDBDecks->getSelected() != -1) {
-					gdeckManager->LoadDeck(Utils::ToPathString(mainGame->cbDBDecks->getItem(mainGame->cbDBDecks->getSelected())), nullptr, true);
+					mainGame->deckBuilder.SetCurrentDeckFromFile(Utils::ToPathString(mainGame->cbDBDecks->getItem(mainGame->cbDBDecks->getSelected())), true);
 					mainGame->ebDeckname->setText(L"");
 				}
 				mainGame->HideElement(mainGame->wMainMenu);
@@ -629,6 +570,7 @@ bool MenuHandler::OnEvent(const irr::SEvent& event) {
 					}
 				} else if(prev_operation == ACTION_UPDATE_PROMPT) {
 					gClientUpdater->StartUpdate(Game::UpdateDownloadBar, mainGame);
+					mainGame->HideElement(mainGame->wMainMenu);
 					mainGame->PopupElement(mainGame->updateWindow);
 				} else if (prev_operation == ACTION_SHOW_CHANGELOG) {
 					Utils::SystemOpen(EPRO_TEXT("https://github.com/edo9300/edopro/releases"));
@@ -721,19 +663,20 @@ bool MenuHandler::OnEvent(const irr::SEvent& event) {
 					break;
 				}
 				auto& replay = ReplayMode::cur_replay;
-				if(!replay.OpenReplay(Utils::ToPathString(mainGame->lstReplayList->getListItem(sel, true))))
-					break;
-				bool has_yrp = replay.IsStreamedReplay() && (replay.yrp != nullptr);
-				if(!(replay.pheader.id == REPLAY_YRP1 && (!mainGame->coreloaded || !(replay.pheader.flag & REPLAY_NEWREPLAY))))
-					mainGame->btnLoadReplay->setEnabled(true);
+				const auto path = Utils::ToPathString(mainGame->lstReplayList->getListItem(sel, true));
+				replay.OpenReplay(path);
+
+				bool can_be_played = replay.CanBePlayedInStreamedMode() || (replay.CanBePlayedInOldMode() && mainGame->coreloaded);
+				mainGame->btnLoadReplay->setEnabled(can_be_played);
+
 				mainGame->btnDeleteReplay->setEnabled(true);
 				mainGame->btnRenameReplay->setEnabled(true);
 				mainGame->btnExportDeck->setEnabled(replay.IsExportable());
 				mainGame->btnShareReplay->setEnabled(true);
 				std::wstring repinfo;
-				time_t curtime = replay.pheader.seed;
+				time_t curtime = replay.pheader.base.timestamp;
 				repinfo.append(fmt::format(L"{:%Y/%m/%d %H:%M:%S}\n", *std::localtime(&curtime)));
-				auto names = replay.GetPlayerNames();
+				const auto& names = replay.GetPlayerNames();
 				for(int i = 0; i < replay.GetPlayersCount(0); i++) {
 					repinfo.append(names[i] + L"\n");
 				}
@@ -746,7 +689,7 @@ bool MenuHandler::OnEvent(const irr::SEvent& event) {
 				mainGame->ebRepStartTurn->setText(L"1");
 				mainGame->stReplayInfo->setText(repinfo.data());
 				mainGame->chkYrp->setChecked(false);
-				mainGame->chkYrp->setEnabled(has_yrp && mainGame->coreloaded);
+				mainGame->chkYrp->setEnabled(replay.HasPlayableYrp() && mainGame->coreloaded);
 				break;
 			}
 			case LISTBOX_SINGLEPLAY_LIST: {
@@ -843,25 +786,19 @@ bool MenuHandler::OnEvent(const irr::SEvent& event) {
 					break;
 				mainGame->env->setFocus(mainGame->wHostPrepare);
 				if(static_cast<irr::gui::IGUICheckBox*>(caller)->isChecked()) {
-					bool check = false;
-					if (!mainGame->cbDeckSelect2->isVisible())
-						check = (mainGame->cbDeckSelect->getSelected() == -1 || !gdeckManager->LoadDeck(Utils::ToPathString(mainGame->cbDeckSelect->getItem(mainGame->cbDeckSelect->getSelected()))));
-					else
-						check = (mainGame->cbDeckSelect->getSelected() == -1 || mainGame->cbDeckSelect2->getSelected() == -1 || !gdeckManager->LoadDeckDouble(Utils::ToPathString(mainGame->cbDeckSelect->getItem(mainGame->cbDeckSelect->getSelected())), Utils::ToPathString(mainGame->cbDeckSelect2->getItem(mainGame->cbDeckSelect2->getSelected()))));
-					if(check) {
+					const auto selected = mainGame->cbDeckSelect->getSelected();
+					if(selected == -1 || !mainGame->deckBuilder.SetCurrentDeckFromFile(Utils::ToPathString(mainGame->cbDeckSelect->getItem(selected)))) {
 						static_cast<irr::gui::IGUICheckBox*>(caller)->setChecked(false);
 						break;
 					}
 					UpdateDeck();
 					DuelClient::SendPacketToServer(CTOS_HS_READY);
 					mainGame->cbDeckSelect->setEnabled(false);
-					mainGame->cbDeckSelect2->setEnabled(false);
 					if(mainGame->dInfo.team1 + mainGame->dInfo.team2 > 2)
 						mainGame->btnHostPrepDuelist->setEnabled(false);
 				} else {
 					DuelClient::SendPacketToServer(CTOS_HS_NOTREADY);
 					mainGame->cbDeckSelect->setEnabled(true);
-					mainGame->cbDeckSelect2->setEnabled(true);
 					if(mainGame->dInfo.team1 + mainGame->dInfo.team2 > 2)
 						mainGame->btnHostPrepDuelist->setEnabled(true);
 				}
@@ -942,19 +879,84 @@ bool MenuHandler::OnEvent(const irr::SEvent& event) {
 				ServerLobby::FillOnlineRooms();
 			break;
 		}
-		case irr::gui::EGET_COMBO_BOX_CHANGED: {
-			switch (id) {
-			case COMBOBOX_HOST_LFLIST: {
-				int selected = mainGame->cbHostLFList->getSelected();
-				if (selected < 0) break;
-				LFList* lflist = gdeckManager->GetLFList(mainGame->cbHostLFList->getItemData(selected));
+		case irr::gui::EGET_TAB_CHANGED: {
+			switch(id) {
+			case TAB_CONTROL_CREATE_HOST: {
+				auto elem = static_cast<irr::gui::IGUITabControl*>(event.GUIEvent.Caller);
+				auto curTab = elem->getActiveTab();
+				if(curTab == 0) {
+					mainGame->UpdateDuelParam();
+				} else {
+					const auto tcg = mainGame->duel_param & DUEL_TCG_SEGOC_NONPUBLIC;
+	#define CHECK(MR) case (MR - 1):{ mainGame->duel_param = DUEL_MODE_MR##MR; mainGame->forbiddentypes = DUEL_MODE_MR##MR##_FORB; break; }
+					switch (mainGame->cbDuelRule->getSelected()) {
+					CHECK(1)
+					CHECK(2)
+					CHECK(3)
+					CHECK(4)
+					CHECK(5)
+					case 5:	{
+						mainGame->duel_param = DUEL_MODE_SPEED;
+						mainGame->forbiddentypes = 0;
+						break;
+					}
+					case 6:	{
+						mainGame->duel_param = DUEL_MODE_RUSH;
+						mainGame->forbiddentypes = 0;
+						break;
+					}
+					case 7:	{
+						mainGame->duel_param = DUEL_MODE_GOAT;
+						mainGame->forbiddentypes = DUEL_MODE_MR1_FORB;
+						break;
+					}
+					}
+	#undef CHECK
+					mainGame->duel_param |= tcg;
+					for (int i = 0; i < sizeofarr(mainGame->chkCustomRules); ++i) {
+						bool set = false;
+						if(i == 19)
+							set = mainGame->duel_param & DUEL_USE_TRAPS_IN_NEW_CHAIN;
+						else if(i == 20)
+							set = mainGame->duel_param & DUEL_6_STEP_BATLLE_STEP;
+						else if(i == 21)
+							set = mainGame->duel_param & DUEL_TRIGGER_WHEN_PRIVATE_KNOWLEDGE;
+						else if(i > 21)
+							set = mainGame->duel_param & 0x100ULL << (i - 3);
+						else
+							set = mainGame->duel_param & 0x100ULL << i;
+						mainGame->chkCustomRules[i]->setChecked(set);
+						if(i == 3)
+							mainGame->chkCustomRules[4]->setEnabled(set);
+					}
+					static constexpr uint32_t limits[]{ TYPE_FUSION, TYPE_SYNCHRO, TYPE_XYZ, TYPE_PENDULUM, TYPE_LINK };
+					for (int i = 0; i < sizeofarr(mainGame->chkTypeLimit); ++i)
+							mainGame->chkTypeLimit[i]->setChecked(mainGame->forbiddentypes & limits[i]);
+				}
 				break;
 			}
+			}
+			break;
+		}
+		case irr::gui::EGET_COMBO_BOX_CHANGED: {
+			switch (id) {
 			case COMBOBOX_DUEL_RULE: {
+				auto setDeckSizes = [&](const DeckSizes& size) {
+					mainGame->ebMainMin->setText(fmt::to_wstring<int>(size.main.min).data());
+					mainGame->ebMainMax->setText(fmt::to_wstring<int>(size.main.max).data());
+					mainGame->ebExtraMin->setText(fmt::to_wstring<int>(size.extra.min).data());
+					mainGame->ebExtraMax->setText(fmt::to_wstring<int>(size.extra.max).data());
+					mainGame->ebSideMin->setText(fmt::to_wstring<int>(size.side.min).data());
+					mainGame->ebSideMax->setText(fmt::to_wstring<int>(size.side.max).data());
+				};
+				static constexpr DeckSizes ocg_deck_sizes{ {40,60}, {0,15}, {0,15} };
+				static constexpr DeckSizes rush_deck_sizes{ {40,60}, {0,15}, {0,15} };
+				static constexpr DeckSizes speed_deck_sizes{ {20,30}, {0,6}, {0,6} };
+				static constexpr DeckSizes goat_deck_sizes{ {40,60}, {0,999}, {0,15} };
 				mainGame->chkTcgRulings->setChecked(false);
 				auto combobox = static_cast<irr::gui::IGUIComboBox*>(event.GUIEvent.Caller);
 #define CHECK(MR) case (MR - 1): { mainGame->duel_param = DUEL_MODE_MR##MR; mainGame->forbiddentypes = DUEL_MODE_MR##MR##_FORB;\
-									mainGame->chkRules[13]->setChecked(false); mainGame->ebStartHand->setText(L"5"); goto remove; }
+									setDeckSizes(ocg_deck_sizes); mainGame->ebStartHand->setText(L"5"); goto remove; }
 				switch (combobox->getSelected()) {
 				CHECK(1)
 				CHECK(2)
@@ -963,22 +965,22 @@ bool MenuHandler::OnEvent(const irr::SEvent& event) {
 				CHECK(5)
 				case 5:	{
 					mainGame->duel_param = DUEL_MODE_SPEED;
+					setDeckSizes(speed_deck_sizes);
 					mainGame->forbiddentypes = 0;
-					mainGame->chkRules[13]->setChecked(true);
 					mainGame->ebStartHand->setText(L"4");
 					goto remove;
 				}
 				case 6:	{
 					mainGame->duel_param = DUEL_MODE_RUSH;
+					setDeckSizes(rush_deck_sizes);
 					mainGame->forbiddentypes = 0;
-					mainGame->chkRules[13]->setChecked(false);
 					mainGame->ebStartHand->setText(L"4");
 					goto remove;
 				}
 				case 7:	{
 					mainGame->duel_param = DUEL_MODE_GOAT;
+					setDeckSizes(goat_deck_sizes);
 					mainGame->forbiddentypes = DUEL_MODE_MR1_FORB;
-					mainGame->chkRules[13]->setChecked(false);
 					mainGame->chkTcgRulings->setChecked(true);
 					mainGame->ebStartHand->setText(L"5");
 					goto remove;
@@ -1086,7 +1088,7 @@ bool MenuHandler::OnEvent(const irr::SEvent& event) {
 				if(to_open_file.size()) {
 					auto extension = Utils::GetFileExtension(to_open_file);
 					bool isMenu = !mainGame->wSinglePlay->isVisible() && !mainGame->wReplay->isVisible();
-					if(extension == L"ydk" && isMenu && gdeckManager->LoadDeck(Utils::ToPathString(to_open_file))) {
+					if(extension == L"ydk" && isMenu && mainGame->deckBuilder.SetCurrentDeckFromFile(Utils::ToPathString(to_open_file))) {
 						mainGame->RefreshDeck(mainGame->cbDBDecks);
 						auto name = Utils::GetFileName(to_open_file);
 						mainGame->ebDeckname->setText(name.data());
@@ -1123,6 +1125,33 @@ bool MenuHandler::OnEvent(const irr::SEvent& event) {
 	default: break;
 	}
 	return false;
+}
+
+template<typename T>
+static void Synchronize(const T& range, irr::gui::IGUICheckBox* elem) {
+	auto checked = elem->isChecked();
+	for(auto i = range.first; i != range.second; ++i)
+		static_cast<irr::gui::IGUICheckBox*>(i->second)->setChecked(checked);
+}
+template<typename T>
+static void Synchronize(const T& range, irr::gui::IGUIScrollBar* elem) {
+	auto position = elem->getPos();
+	for(auto i = range.first; i != range.second; ++i)
+		static_cast<irr::gui::IGUIScrollBar*>(i->second)->setPos(position);
+}
+
+void MenuHandler::SynchronizeElement(irr::gui::IGUIElement* elem) const {
+	const auto range = synchronized_elements.equal_range(elem->getID());
+	if(range.first == range.second)
+		return;
+	switch(elem->getType()) {
+	case irr::gui::EGUIET_CHECK_BOX:
+		return Synchronize(range, static_cast<irr::gui::IGUICheckBox*>(elem));
+	case irr::gui::EGUIET_SCROLL_BAR:
+		return Synchronize(range, static_cast<irr::gui::IGUIScrollBar*>(elem));
+	default:
+		return;
+	}
 }
 
 }

@@ -1,5 +1,11 @@
 #include "osx_menu.h"
+#include <AvailabilityMacros.h>
 #import <AppKit/AppKit.h>
+
+#if !defined(MAC_OS_X_VERSION_10_12) || MAC_OS_X_VERSION_MIN_ALLOWED < MAC_OS_X_VERSION_10_12
+#define NSEventModifierFlagControl NSControlKeyMask
+#define NSEventModifierFlagCommand NSCommandKeyMask
+#endif
 
 void (*toggleFullScreenCallback)(void) = NULL;
 
@@ -18,7 +24,9 @@ void (*toggleFullScreenCallback)(void) = NULL;
 
 -(void)toggle {
 	[NSApp activateIgnoringOtherApps:YES];
+#if defined(__MAC_10_7) && defined(MAC_OS_X_VERSION_10_7) && MAC_OS_X_VERSION_MIN_REQUIRED >= MAC_OS_X_VERSION_10_7
 	[[NSApp mainWindow] toggleFullScreen:nil];
+#endif
 	toggleFullScreenCallback();
 }
 @end
@@ -41,16 +49,22 @@ void EDOPRO_SetupMenuBar(void (*callback)(void)) {
 
 		NSMenuItem* newWindowItem = [appMainMenu addItemWithTitle:@"New Window" action:@selector(spawn) keyEquivalent:@"n"];
 		[newWindowItem setTarget:handler];
-		[newWindowItem setKeyEquivalentModifierMask:NSCommandKeyMask];
+		[newWindowItem setKeyEquivalentModifierMask:NSEventModifierFlagCommand];
 		[dockMenu addItem:[newWindowItem copyWithZone:nil]];
 
 		NSMenuItem* fullScreenItem = [appMainMenu addItemWithTitle:@"Toggle Full Screen" action:@selector(toggle) keyEquivalent:@"f"];
 		[fullScreenItem setTarget:handler];
-		[fullScreenItem setKeyEquivalentModifierMask:NSControlKeyMask+NSCommandKeyMask];
+		[fullScreenItem setKeyEquivalentModifierMask:NSEventModifierFlagControl+NSEventModifierFlagCommand];
 		[dockMenu addItem:[fullScreenItem copyWithZone:nil]];
 
+#if defined(__MAC_10_7) && defined(MAC_OS_X_VERSION_10_7) && MAC_OS_X_VERSION_MIN_REQUIRED >= MAC_OS_X_VERSION_10_7
+		NSWindowCollectionBehavior newBehavior = [[NSApp mainWindow] collectionBehavior];
+		newBehavior |= NSWindowCollectionBehaviorFullScreenPrimary;
+		[[NSApp mainWindow] setCollectionBehavior:newBehavior];
+#endif
+
 		NSMenuItem* quitItem = [appMainMenu addItemWithTitle:@"Quit" action:@selector(terminate:) keyEquivalent:@"q"];
-		[quitItem setKeyEquivalentModifierMask:NSCommandKeyMask];
+		[quitItem setKeyEquivalentModifierMask:NSEventModifierFlagCommand];
 
 		[NSApp setMainMenu:systemMenuBar];
 	}

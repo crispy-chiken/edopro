@@ -1,5 +1,4 @@
 #include "data_manager.h"
-#include <fstream>
 #include <fmt/format.h>
 #include <IReadFile.h>
 #include <sqlite3.h>
@@ -9,10 +8,7 @@
 #include "logging.h"
 #include "utils.h"
 #include "common.h"
-#if defined(__MINGW32__) && defined(UNICODE)
-#include <fcntl.h>
-#include <ext/stdio_filebuf.h>
-#endif
+#include "file_stream.h"
 
 namespace ygo {
 
@@ -149,7 +145,7 @@ bool DataManager::ParseDB(sqlite3* pDB) {
 
 		cd.lscale = (level >> 24) & 0xff;
 		cd.rscale = (level >> 16) & 0xff;
-		cd.race = static_cast<uint32_t>(sqlite3_column_int64(pStmt, 8));
+		cd.race = static_cast<uint64_t>(sqlite3_column_int64(pStmt, 8));
 		cd.attribute = static_cast<uint32_t>(sqlite3_column_int64(pStmt, 9));
 		cd.category = static_cast<uint32_t>(sqlite3_column_int64(pStmt, 10));
 
@@ -225,15 +221,7 @@ bool DataManager::ParseLocaleDB(sqlite3* pDB) {
 	return true;
 }
 bool DataManager::LoadStrings(const epro::path_string& file) {
-#if defined(__MINGW32__) && defined(UNICODE)
-	auto fd = _wopen(file.data(), _O_RDONLY);
-	if(fd == -1)
-		return false;
-	__gnu_cxx::stdio_filebuf<char> b(fd, std::ios::in);
-	std::istream string_file(&b);
-#else
-	std::ifstream string_file(file);
-#endif
+	FileStream string_file{ file, FileStream::in };
 	if(string_file.fail())
 		return false;
 	std::string str;
@@ -271,15 +259,7 @@ bool DataManager::LoadStrings(const epro::path_string& file) {
 	return true;
 }
 bool DataManager::LoadLocaleStrings(const epro::path_string& file) {
-#if defined(__MINGW32__) && defined(UNICODE)
-	auto fd = _wopen(file.data(), _O_RDONLY);
-	if(fd == -1)
-		return false;
-	__gnu_cxx::stdio_filebuf<char> b(fd, std::ios::in);
-	std::istream string_file(&b);
-#else
-	std::ifstream string_file(file);
-#endif
+	FileStream string_file{ file, FileStream::in };
 	if(string_file.fail())
 		return false;
 	std::string str;
@@ -317,15 +297,7 @@ bool DataManager::LoadLocaleStrings(const epro::path_string& file) {
 	return true;
 }
 bool DataManager::LoadIdsMapping(const epro::path_string& file) {
-#if defined(__MINGW32__) && defined(UNICODE)
-	auto fd = _wopen(file.data(), _O_RDONLY);
-	if(fd == -1)
-		return false;
-	__gnu_cxx::stdio_filebuf<char> b(fd, std::ios::in);
-	std::istream mappings_file(&b);
-#else
-	std::ifstream mappings_file(file);
-#endif
+	FileStream mappings_file{ file, FileStream::in };
 	if(mappings_file.fail())
 		return false;
 	nlohmann::json mappings;
@@ -481,7 +453,7 @@ std::wstring DataManager::FormatAttribute(uint32_t attribute) const {
 		return std::wstring{ unknown_string };
 	return res;
 }
-static std::wstring FormatSkill(uint32_t skill_type) {
+static std::wstring FormatSkill(uint64_t skill_type) {
 	std::wstring res;
 	for(uint32_t i = 2100; skill_type; skill_type >>= 1, ++i) {
 		if(skill_type & 0x1u) {
@@ -494,7 +466,7 @@ static std::wstring FormatSkill(uint32_t skill_type) {
 		return std::wstring{ DataManager::unknown_string };
 	return res;
 }
-std::wstring DataManager::FormatRace(uint32_t race, bool isSkill) const {
+std::wstring DataManager::FormatRace(uint64_t race, bool isSkill) const {
 	if(isSkill) return FormatSkill(race);
 	std::wstring res;
 	uint32_t i = 1020;

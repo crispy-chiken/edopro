@@ -1,0 +1,8 @@
+include(CMakeFindDependencyMacro)
+if(OFF STREQUAL "OFF")
+    find_dependency(ZLIB)
+endif()
+if(builtin STREQUAL "pcre")
+    find_dependency(unofficial-pcre CONFIG)
+endif()
+include("${CMAKE_CURRENT_LIST_DIR}/unofficial-git2Targets.cmake")

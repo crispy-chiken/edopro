@@ -1,0 +1,16 @@
+#libevent pkg-config source file
+
+prefix=C:/vcpkg/packages/libevent_x86-windows-static
+exec_prefix=C:/vcpkg/packages/libevent_x86-windows-static
+libdir=C:/vcpkg/packages/libevent_x86-windows-static/lib
+includedir=C:/vcpkg/packages/libevent_x86-windows-static/include
+
+Name: libevent
+Description: libevent is an asynchronous notification event loop library
+Version: 2.1.12
+Requires:
+Conflicts:
+Libs: -L${libdir} -levent
+Libs.private:  -Lws2_32 -Lshell32 -Ladvapi32
+Cflags: -I${includedir}
+

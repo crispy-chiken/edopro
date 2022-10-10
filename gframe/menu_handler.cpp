@@ -189,7 +189,26 @@ bool MenuHandler::OnEvent(const irr::SEvent& event) {
 				mainGame->btnJoinHost->setEnabled(true);
 				mainGame->btnJoinCancel->setEnabled(true);
 				mainGame->HideElement(mainGame->wMainMenu);
-				mainGame->ShowElement(mainGame->wLanWindow);
+				uint16_t host_port;
+					try {
+						host_port = static_cast<uint16_t>(std::stoul(mainGame->ebHostPort->getText()));
+					}
+					catch(...) {
+						break;
+					}
+					gGameConfig->gamename = mainGame->ebServerName->getText();
+					gGameConfig->serverport = mainGame->ebHostPort->getText();
+					if(!NetServer::StartServer(host_port))
+						break;
+					if(!DuelClient::StartClient(0x100007F /*127.0.0.1 in network byte order*/, host_port)) {
+						NetServer::StopServer();
+						break;
+					}
+					DuelClient::is_local_host = true;
+					mainGame->btnHostConfirm->setEnabled(false);
+					mainGame->btnHostCancel->setEnabled(false);
+					mainGame->gBot.Refresh(gGameConfig->filterBot * (mainGame->cbDuelRule->getSelected() + 1), gGameConfig->lastBot);
+					DuelClient::SendPacketToServer(CTOS_HS_TOOBSERVER);
 				break;
 			}
 			case BUTTON_JOIN_HOST: {
@@ -277,6 +296,7 @@ bool MenuHandler::OnEvent(const irr::SEvent& event) {
 					mainGame->btnHostConfirm->setEnabled(false);
 					mainGame->btnHostCancel->setEnabled(false);
 					mainGame->gBot.Refresh(gGameConfig->filterBot * (mainGame->cbDuelRule->getSelected() + 1), gGameConfig->lastBot);
+					DuelClient::SendPacketToServer(CTOS_HS_TOOBSERVER);
 				}
 				break;
 			}

@@ -121,6 +121,8 @@ void CheckArguments(const args_t& args) {
 		SetCheckbox(ygo::mainGame->tabSettings.chkEnableSound, false);
 		SetCheckbox(ygo::mainGame->tabSettings.chkEnableMusic, false);
 	}
+
+	ClickButton(ygo::mainGame->btnLanMode);
 }
 
 inline void ThreadsStartup() {

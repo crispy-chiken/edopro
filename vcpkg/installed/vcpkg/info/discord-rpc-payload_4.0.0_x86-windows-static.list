@@ -1,0 +1,14 @@
+x86-windows-static/
+x86-windows-static/debug/
+x86-windows-static/debug/lib/
+x86-windows-static/debug/lib/discord-rpc.lib
+x86-windows-static/include/
+x86-windows-static/include/discord_register.h
+x86-windows-static/include/discord_rpc.h
+x86-windows-static/lib/
+x86-windows-static/lib/discord-rpc.lib
+x86-windows-static/share/
+x86-windows-static/share/discord-rpc-payload/
+x86-windows-static/share/discord-rpc-payload/copyright
+x86-windows-static/share/discord-rpc-payload/vcpkg.spdx.json
+x86-windows-static/share/discord-rpc-payload/vcpkg_abi_info.txt

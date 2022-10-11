@@ -111,7 +111,7 @@ bool DuelClient::StartClient(uint32_t ip, uint16_t port, uint32_t gameid, bool c
 		return false;
 	}
 	connect_state = 0x1;
-	rnd.seed(time(0));
+	rnd.seed(0);
 	if(!create_game) {
 		timeval timeout = {5, 0};
 		event* resp_event = event_new(client_base, 0, EV_TIMEOUT, ConnectTimeout, 0);

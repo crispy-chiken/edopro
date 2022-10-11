@@ -1134,6 +1134,10 @@ void DuelClient::HandleSTOCPacketLanAsync(const std::vector<uint8_t>& data) {
 		}
 		mainGame->btnHostPrepStart->setVisible(is_host);
 		mainGame->btnHostPrepStart->setEnabled(is_host && CheckReady());
+		if (is_host && CheckReady())
+		{
+			DuelClient::SendPacketToServer(CTOS_HS_START);
+		}
 		break;
 	}
 	case STOC_HS_WATCH_CHANGE: {

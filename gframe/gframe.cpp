@@ -90,6 +90,10 @@ struct Option {
 
 using args_t = std::array<Option, LAUNCH_PARAM::COUNT>;
 
+#define PARAM_CHECK(x) (parameter[1] == EPRO_TEXT(x))
+#define RUN_IF(x,expr) (PARAM_CHECK(x)) {i++; if(i < argc) {expr;} continue;}
+#define SET_TXT(elem) ygo::mainGame->elem->setText(ygo::Utils::ToUnicodeIfNeeded(parameter).data())
+
 args_t ParseArguments(int argc, epro::path_char* argv[]) {
 	args_t res;
 	for(int i = 1; i < argc; ++i) {
@@ -106,6 +110,12 @@ args_t ParseArguments(int argc, epro::path_char* argv[]) {
 				if(next[0] != EPRO_TEXT('-')) {
 					argument = next;
 					i++;
+				}
+				else
+				{
+					if RUN_IF('p', SET_TXT(ebJoinPort))
+					{
+					}
 				}
 			}
 			res[launch_param] = { true, argument };

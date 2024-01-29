@@ -106,7 +106,7 @@ void DeckManager::LoadLFList() {
 }
 //moves the "N/A" lflist at the bottom of the vector
 void DeckManager::RefreshLFList() {
-	if(null_lflist_index != -1 && null_lflist_index != _lfList.size() -1) {
+	if (null_lflist_index != ~size_t() && null_lflist_index != _lfList.size() - 1) {
 		auto it = _lfList.begin() + null_lflist_index;
 		std::rotate(it, it + 1, _lfList.end());
 		null_lflist_index = _lfList.size() - 1;
@@ -143,10 +143,10 @@ int DeckManager::TypeCount(const Deck::Vector& cards, uint32_t type) {
 	}
 	return count;
 }
-int DeckManager::OTCount(const Deck::Vector& cards, uint32_t ot) {
+int DeckManager::CountLegends(const Deck::Vector& cards, uint32_t type) {
 	int count = 0;
 	for(const auto& card : cards) {
-		if(card->ot & ot)
+		if((card->ot & SCOPE_LEGEND) && (card->type & type))
 			count++;
 	}
 	return count;
@@ -203,7 +203,11 @@ DeckError DeckManager::CheckDeckContent(const Deck& deck, LFList const* lflist, 
 	DeckError ret{ DeckError::NONE };
 	if(TypeCount(deck.main, forbiddentypes) > 0 || TypeCount(deck.extra, forbiddentypes) > 0 || TypeCount(deck.side, forbiddentypes) > 0)
 		return ret.type = DeckError::FORBTYPE, ret;
-	if((OTCount(deck.main, SCOPE_LEGEND) + OTCount(deck.extra, SCOPE_LEGEND)) > 1)
+	if((CountLegends(deck.main, TYPE_MONSTER) + CountLegends(deck.extra, TYPE_MONSTER)) > 1)
+		return ret.type = DeckError::TOOMANYLEGENDS, ret;
+	if(CountLegends(deck.main, TYPE_SPELL) > 1)
+		return ret.type = DeckError::TOOMANYLEGENDS, ret;
+	if(CountLegends(deck.main, TYPE_TRAP) > 1)
 		return ret.type = DeckError::TOOMANYLEGENDS, ret;
 	if(TypeCount(deck.main, TYPE_SKILL) > 1)
 		return ret.type = DeckError::TOOMANYSKILLS, ret;
@@ -229,17 +233,17 @@ DeckError DeckManager::CheckDeckSize(const Deck& deck, const DeckSizes& sizes) {
 	auto skills = TypeCount(deck.main, TYPE_SKILL);
 	if(sizes.main != (deck.main.size() - skills)) {
 		ret.type = DeckError::MAINCOUNT;
-		ret.count.current = deck.main.size() - skills;
+		ret.count.current = static_cast<uint32_t>(deck.main.size()) - skills;
 		ret.count.minimum = sizes.main.min;
 		ret.count.maximum = sizes.main.max;
 	} else if(sizes.extra != deck.extra.size()) {
 		ret.type = DeckError::EXTRACOUNT;
-		ret.count.current = deck.extra.size();
+		ret.count.current = static_cast<uint32_t>(deck.extra.size());
 		ret.count.minimum = sizes.extra.min;
 		ret.count.maximum = sizes.extra.max;
 	} else if(sizes.side != deck.side.size()) {
 		ret.type = DeckError::SIDECOUNT;
-		ret.count.current = deck.side.size();
+		ret.count.current = static_cast<uint32_t>(deck.side.size());
 		ret.count.minimum = sizes.side.min;
 		ret.count.maximum = sizes.side.max;
 	}
@@ -300,7 +304,7 @@ static bool LoadCardList(const epro::path_string& name, cardlist_type* mainlist 
 		}
 	}
 	if(retmainc)
-		*retmainc = res.size() - sidec;
+		*retmainc = static_cast<uint32_t>(res.size() - sidec);
 	if(retsidec)
 		*retsidec = sidec;
 	return true;
@@ -375,12 +379,20 @@ bool DeckManager::LoadSide(Deck& deck, uint32_t* dbuf, uint32_t mainc, uint32_t 
 	for(auto& card : deck.side)
 		pcount[card->code]++;
 	auto old_skills = TypeCount(deck.main, TYPE_SKILL);
-	auto old_legends = OTCount(deck.main, SCOPE_LEGEND) + OTCount(deck.extra, SCOPE_LEGEND);
+	auto old_legends_monster = CountLegends(deck.main, TYPE_MONSTER) + CountLegends(deck.extra, TYPE_MONSTER);
+	auto old_legends_spell = CountLegends(deck.main, TYPE_SPELL);
+	auto old_legends_trap = CountLegends(deck.main, TYPE_TRAP);
 	Deck ndeck;
 	LoadDeckFromBuffer(ndeck, dbuf, mainc, sidec);
 	auto new_skills = TypeCount(ndeck.main, TYPE_SKILL);
-	auto new_legends = OTCount(ndeck.main, SCOPE_LEGEND) + OTCount(ndeck.extra, SCOPE_LEGEND);
-	if(new_legends > std::max(old_legends, 1))
+	auto new_legends_monster = CountLegends(ndeck.main, TYPE_MONSTER) + CountLegends(ndeck.extra, TYPE_MONSTER);
+	if(new_legends_monster > std::max(old_legends_monster, 1))
+		return false;
+	auto new_legends_spell = CountLegends(ndeck.main, TYPE_SPELL);
+	if(new_legends_spell > std::max(old_legends_spell, 1))
+		return false;
+	auto new_legends_trap = CountLegends(ndeck.main, TYPE_TRAP);
+	if(new_legends_trap > std::max(old_legends_trap, 1))
 		return false;
 	// ideally the check should be only new_skills > 1, but the player might host with don't check deck
 	// and thus have more than 1 skill in the deck, do this check to ensure that the sided deck will
@@ -463,7 +475,7 @@ const wchar_t* DeckManager::ExportDeckCardNames(Deck deck) {
 				prev = code;
 				count = 1;
 			} else if(prev && code != prev) {
-				res.append(epro::format(L"{} x{}\n", gDataManager->GetName(prev), count));
+				res.append(epro::format(L"{} {}\n", count, gDataManager->GetName(prev)));
 				count = 1;
 				prev = code;
 			} else {
@@ -471,7 +483,7 @@ const wchar_t* DeckManager::ExportDeckCardNames(Deck deck) {
 			}
 		}
 		if(prev)
-			res.append(epro::format(L"{} x{}\n", gDataManager->GetName(prev), count));
+			res.append(epro::format(L"{} {}\n", count, gDataManager->GetName(prev)));
 	};
 	bool prev = false;
 	if(deck.main.size()) {
@@ -525,7 +537,7 @@ uint32_t gzinflate(const std::vector<uint8_t>& in, uint8_t(&buffer)[N]) {
 		return 0;
 
 	z.next_in = (decltype(z.next_in))in.data();
-	z.avail_in = in.size();
+	z.avail_in = static_cast<decltype(z.avail_in)>(in.size());
 
 	z.next_out = buffer;
 	z.avail_out = N;
@@ -560,6 +572,7 @@ bool DeckManager::ImportDeckBase64Omega(Deck& deck, epro::wstringview buffer) {
 	return true;
 }
 bool DeckManager::DeleteDeck(Deck& deck, epro::path_stringview name) {
+	(void)deck;
 	return Utils::FileDelete(epro::format(EPRO_TEXT("./deck/{}.ydk"), name));
 }
 bool DeckManager::RenameDeck(epro::path_stringview oldname, epro::path_stringview newname) {

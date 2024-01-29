@@ -1,7 +1,9 @@
 #include <IrrCompileConfig.h>
+#include <path.h>
 #include "game_config.h"
 #include <fmt/format.h>
 #include "bufferio.h"
+#include "porting.h"
 #include "utils.h"
 #include "config.h"
 #include "logging.h"
@@ -10,6 +12,9 @@
 namespace ygo {
 
 GameConfig::GameConfig() {
+#if EDOPRO_ANDROID
+	Load(epro::format("{}/system.conf", porting::internal_storage));
+#endif
 	Load(EPRO_TEXT("./config/system.conf"));
 	if(configs.empty()) {
 		{
@@ -45,11 +50,10 @@ T parseOption(std::string& value) {
 		if(std::is_same<T, uint64_t>::value)
 			return static_cast<T>(std::stoull(value));
 		return static_cast<T>(std::stoul(value));
-	} else {
-		if(std::is_same<T, int64_t>::value)
-			return static_cast<T>(std::stoll(value));
-		return static_cast<T>(std::stoi(value));
 	}
+	if(std::is_same<T, int64_t>::value)
+		return static_cast<T>(std::stoll(value));
+	return static_cast<T>(std::stoi(value));
 }
 
 template<>
@@ -75,15 +79,19 @@ std::wstring parseOption(std::string& value) {
 template<>
 irr::video::E_DRIVER_TYPE parseOption<irr::video::E_DRIVER_TYPE>(std::string& value) {
 	Utils::ToUpperNoAccentsSelf(value);
-#ifndef __ANDROID__
+#if !EDOPRO_ANDROID
 	if(value == "OPENGL")
 		return irr::video::EDT_OPENGL;
-#ifdef _WIN32
+#if EDOPRO_WINDOWS
 	if(value == "D3D9")
 		return irr::video::EDT_DIRECT3D9;
+#if (IRRLICHT_VERSION_MAJOR==1 && IRRLICHT_VERSION_MINOR==9)
+	if(value == "D3D9ON12")
+		return irr::video::EDT_DIRECT3D9_ON_12;
 #endif
 #endif
-#if !defined(EDOPRO_MACOS) && IRRLICHT_VERSION_MAJOR==1 && IRRLICHT_VERSION_MINOR==9
+#endif
+#if  !EDOPRO_MACOS && (IRRLICHT_VERSION_MAJOR==1 && IRRLICHT_VERSION_MINOR==9)
 	if(value == "OGLES1")
 		return irr::video::EDT_OGLES1;
 	if(value == "OGLES2")
@@ -96,12 +104,38 @@ template<>
 ygo::GameConfig::TextFont parseOption<ygo::GameConfig::TextFont>(std::string& value) {
 	ygo::GameConfig::TextFont ret;
 	auto pos = value.find(' ');
-	if(pos == std::wstring::npos) {
+	if(pos == std::string::npos) {
 		ret.font = Utils::ToPathString(value);
 		return ret;
 	}
 	ret.font = Utils::ToPathString(value.substr(0, pos));
-	ret.size = std::stoi(value.substr(pos));
+	ret.size = static_cast<uint8_t>(std::stoi(value.substr(pos)));
+	return ret;
+}
+
+template<>
+ygo::GameConfig::FallbackFonts parseOption<ygo::GameConfig::FallbackFonts>(std::string& value) {
+	ygo::GameConfig::FallbackFonts ret;
+#ifdef YGOPRO_USE_BUNDLED_FONT
+	bool listed_bundled = false;
+#endif
+	for(auto& font : Utils::TokenizeString(value, '"')) {
+		if(font.find_first_not_of(' ') == std::string::npos)
+			continue;
+		const auto parsed_font = parseOption<GameConfig::TextFont>(font);
+		if(parsed_font.font == EPRO_TEXT("bundled"))
+#ifdef YGOPRO_USE_BUNDLED_FONT
+			listed_bundled = true;
+#else
+			continue;
+#endif
+		ret.push_back(std::move(parsed_font));
+	}
+
+#ifdef YGOPRO_USE_BUNDLED_FONT
+	if(!listed_bundled)
+		ret.emplace_back(ygo::GameConfig::TextFont{ { EPRO_TEXT("bundled") }, 12 });
+#endif
 	return ret;
 }
 
@@ -115,12 +149,12 @@ int parseOption<int, ygo::GameConfig::MaxFPSConfig>(std::string& value) {
 
 template<>
 int parseOption<int, ygo::GameConfig::MusicConfig>(std::string& value) {
-	return std::min(std::max(std::stoi(value), 0), 100);;
+	return std::min(std::max(std::stoi(value), 0), 100);
 }
 
 template<>
-uint8_t parseOption<uint8_t, ygo::GameConfig::BoolAsInt>(std::string& value) {
-	return !!std::stoi(value);
+uint8_t parseOption<uint8_t, ygo::GameConfig::BoolMaybeUndefined>(std::string& value) {
+	return std::min<uint8_t>(static_cast<uint8_t>(std::stoul(value)), 2);
 }
 
 template<typename T>
@@ -154,13 +188,30 @@ std::string serializeOption(const ygo::GameConfig::TextFont& value) {
 }
 
 template<>
+std::string serializeOption(const ygo::GameConfig::FallbackFonts& value) {
+	std::string res;
+	for(const auto& font : value) {
+		res.append(1, '"').append(serializeOption(font)).append("\" ");
+	}
+	if(!res.empty())
+		res.pop_back();
+	return res;
+}
+
+template<>
 std::string serializeOption(const irr::video::E_DRIVER_TYPE& driver) {
 	switch(driver) {
+#if !EDOPRO_ANDROID
 	case irr::video::EDT_OPENGL:
 		return "opengl";
+#if EDOPRO_WINDOWS
 	case irr::video::EDT_DIRECT3D9:
 		return "d3d9";
-#if (IRRLICHT_VERSION_MAJOR==1 && IRRLICHT_VERSION_MINOR==9)
+	case irr::video::EDT_DIRECT3D9_ON_12:
+		return "d3d9on12";
+#endif
+#endif
+#if  !EDOPRO_MACOS && (IRRLICHT_VERSION_MAJOR==1 && IRRLICHT_VERSION_MINOR==9)
 	case irr::video::EDT_OGLES1:
 		return "ogles1";
 	case irr::video::EDT_OGLES2:
@@ -186,7 +237,7 @@ bool GameConfig::Load(const epro::path_stringview filename) {
 			continue;
 		}
 		pos = str.find('=');
-		if (pos == std::wstring::npos)
+		if (pos == std::string::npos)
 			continue;
 		auto type = str.substr(0, pos - 1);
 		str.erase(0, pos + 2);

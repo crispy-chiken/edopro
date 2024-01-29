@@ -1,13 +1,13 @@
 OPTION(irr::video::E_DRIVER_TYPE, driver_type, irr::video::EDT_COUNT)
 #if (IRRLICHT_VERSION_MAJOR==1 && IRRLICHT_VERSION_MINOR==9)
-#if defined(__linux__) && !defined(__ANDROID__)
-OPTION_TAGGED(uint8_t, ygo::GameConfig::BoolAsInt, useWayland, 2)
+#if EDOPRO_LINUX
+OPTION_TAGGED(uint8_t, ygo::GameConfig::BoolMaybeUndefined, useWayland, 2)
 #endif
-#if defined(EDOPRO_MACOS)
-OPTION_TAGGED(uint8_t, ygo::GameConfig::BoolAsInt, useIntegratedGpu, 2)
+#if EDOPRO_MACOS
+OPTION_TAGGED(uint8_t, ygo::GameConfig::BoolMaybeUndefined, useIntegratedGpu, 2)
 #endif
 #endif
-OPTION(bool, vsync, true)
+OPTION(uint8_t, vsync, 1)
 OPTION_TAGGED(int, ygo::GameConfig::MaxFPSConfig, maxFPS, 60)
 OPTION(bool, fullscreen, false)
 OPTION(bool, showConsole, false)
@@ -34,8 +34,13 @@ OPTION(bool, noShuffleDeck, false)
 OPTION(bool, noCheckDeckContent, false)
 OPTION(bool, noCheckDeckSize, false)
 OPTION(bool, hideHandsInReplays, false)
-OPTION(ygo::GameConfig::TextFont, textfont, { EPRO_TEXT("fonts/NotoSansJP-Regular.otf"), 12 })
+OPTION(ygo::GameConfig::TextFont, textfont, EPRO_TEXT("fonts/NotoSansJP-Regular.otf"), 12)
 OPTION(epro::path_string, numfont, EPRO_TEXT("fonts/NotoSansJP-Regular.otf"))
+#ifdef YGOPRO_USE_BUNDLED_FONT
+OPTION(ygo::GameConfig::FallbackFonts, fallbackFonts, ygo::GameConfig::TextFont{ epro::path_string{EPRO_TEXT("bundled")}, 12 })
+#else
+OPTION(ygo::GameConfig::FallbackFonts, fallbackFonts, )
+#endif //YGOPRO_USE_BUNDLED_FONT
 OPTION(std::wstring, serverport, L"7911")
 OPTION(std::wstring, lasthost, L"127.0.0.1")
 OPTION(std::wstring, lastport, L"7911")
@@ -61,14 +66,15 @@ OPTION(bool, keep_cardinfo_aspect_ratio, false)
 OPTION(bool, showFPS, true)
 OPTION(bool, hidePasscodeScope, false)
 OPTION(bool, showScopeLabel, true)
+OPTION(bool, ignoreDeckContents, false)
 OPTION(bool, filterBot, true)
 OPTION_ALIASED(bool, chkAnime, show_unofficial, false)
-#ifdef EDOPRO_MACOS
+#if EDOPRO_MACOS
 OPTION(bool, ctrlClickIsRMB, true)
 #else
 OPTION(bool, ctrlClickIsRMB, false)
 #endif
-#ifdef __ANDROID__
+#if EDOPRO_ANDROID
 OPTION(float, dpi_scale, 2.f)
 #else
 OPTION(float, dpi_scale, 1.f)
@@ -79,7 +85,7 @@ OPTION_ALIASED(epro::path_string, locale, language, EPRO_TEXT("English"))
 OPTION(bool, scale_background, true)
 OPTION(bool, dotted_lines, false)
 OPTION(bool, controller_input, false)
-#if defined(__ANDROID__) || defined(EDOPRO_IOS)
+#if EDOPRO_ANDROID || EDOPRO_IOS
 OPTION(bool, accurate_bg_resize, true)
 OPTION(bool, confirm_clear_deck, true)
 #else
@@ -104,7 +110,7 @@ OPTION(uint16_t, minExtraDeckSize, 0)
 OPTION(uint16_t, maxExtraDeckSize, 15)
 OPTION(uint16_t, minSideDeckSize, 0)
 OPTION(uint16_t, maxSideDeckSize, 15)
-#ifdef __ANDROID__
+#if EDOPRO_ANDROID
 OPTION(bool, native_keyboard, false)
 OPTION(bool, native_mouse, false)
 #endif

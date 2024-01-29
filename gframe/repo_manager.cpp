@@ -15,10 +15,8 @@ static constexpr int FETCH_OBJECTS_PERCENTAGE = 60;
 static constexpr int DELTA_OBJECTS_PERCENTAGE = 80;
 static constexpr int CHECKOUT_PERCENTAGE = 99;
 
-#if LIBGIT2_VER_MAJOR>0 || LIBGIT2_VER_MINOR>=99
-#define git_oid_zero(oid) git_oid_is_zero(oid)
-#else
-#define git_oid_zero(oid) git_oid_iszero(oid)
+#if LIBGIT2_VER_MAJOR<=0 && LIBGIT2_VER_MINOR<99
+#define git_oid_is_zero(oid) git_oid_iszero(oid)
 #endif
 
 namespace ygo {
@@ -76,7 +74,7 @@ RepoManager::RepoManager() {
 	git_libgit2_init();
 	if(gGameConfig->ssl_certificate_path.size() && Utils::FileExists(Utils::ToPathString(gGameConfig->ssl_certificate_path)))
 		git_libgit2_opts(GIT_OPT_SET_SSL_CERT_LOCATIONS, gGameConfig->ssl_certificate_path.data(), "");
-#ifdef _WIN32
+#if EDOPRO_WINDOWS
 	else
 		git_libgit2_opts(GIT_OPT_SET_SSL_CERT_LOCATIONS, "SYSTEM", "");
 #endif
@@ -104,7 +102,7 @@ RepoManager::~RepoManager() {
 
 size_t RepoManager::GetUpdatingReposNumber() const {
 	return available_repos.size();
-};
+}
 
 std::vector<const GitRepo*> RepoManager::GetAllRepos() const {
 	std::vector<const GitRepo*> res;
@@ -271,7 +269,7 @@ void RepoManager::CloneOrUpdateTask() {
 				Git::Check(git_revwalk_push_head(walker));
 				for(git_oid oid; git_revwalk_next(&oid, walker) == 0;) {
 					auto commit = Git::MakeUnique(git_commit_lookup, repo, &oid);
-					if(git_oid_zero(&oid) || history.full_history.size() > MAX_HISTORY_LENGTH)
+					if(git_oid_is_zero(&oid) || history.full_history.size() > MAX_HISTORY_LENGTH)
 						break;
 					AppendCommit(history.full_history, commit.get());
 				}
@@ -367,12 +365,13 @@ int RepoManager::FetchCb(const git_indexer_progress* stats, void* payload) {
 }
 
 void RepoManager::CheckoutCb(const char* path, size_t completed_steps, size_t total_steps, void* payload) {
+	(void)path;
 	int percent;
 	if(total_steps == 0)
 		percent = CHECKOUT_PERCENTAGE;
 	else {
 		static constexpr auto DELTA_INCREMENT = CHECKOUT_PERCENTAGE - DELTA_OBJECTS_PERCENTAGE;
-		percent = DELTA_OBJECTS_PERCENTAGE + ((DELTA_INCREMENT * completed_steps) / total_steps);
+		percent = static_cast<int>(DELTA_OBJECTS_PERCENTAGE + ((DELTA_INCREMENT * completed_steps) / total_steps));
 	}
 	auto pl = static_cast<GitCbPayload*>(payload);
 	pl->rm->SetRepoPercentage(pl->path, percent);

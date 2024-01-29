@@ -7,14 +7,14 @@
 namespace irr {
 namespace gui {
 
-class SubPanel : public IGUIElement {
+class SubPanel final : public IGUIElement {
 public:
 	SubPanel(IGUIEnvironment* env, IGUIElement* parent, s32 id, const core::rect<s32>& rectangle) : IGUIElement(EGUIET_ELEMENT, env, parent, id, rectangle) {};
-	virtual bool isPointInside(const core::position2d<s32>& point) const { return false; };
+	bool isPointInside(const core::vector2d<s32>& point) const override { return false; };
 };
 
 Panel::Panel(IGUIEnvironment* env, const core::rect<s32>& rectangle, s32 id, IGUIElement* parent, bool vertical, bool horizontal) : IGUIElement(EGUIET_ELEMENT, env, parent, id, rectangle),
-hasHorizontalScrolling(horizontal), hasVerticalScrolling(vertical) {
+hasVerticalScrolling(vertical), hasHorizontalScrolling(horizontal) {
 	verticalScroll = Environment->addScrollBar(false, { 0, 0, 1, 1 }, this, -1);
 	verticalScroll->setVisible(false);
 	horizontalScroll = Environment->addScrollBar(true, { 0, 0, 1, 1 }, this, -1);
@@ -84,6 +84,8 @@ void Panel::doResizingStuff() {
 		s32 maxX = rect.LowerRightCorner.X;
 		s32 maxY = rect.LowerRightCorner.Y;
 		for(auto& child : subpanel->getChildren()) {
+			if(!child->isVisible())
+				continue;
 			maxX = std::max(maxX, child->getAbsolutePosition().LowerRightCorner.X);
 			maxY = std::max(maxY, child->getAbsolutePosition().LowerRightCorner.Y);
 		}

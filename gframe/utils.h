@@ -9,9 +9,9 @@
 #include <memory> // unique_ptr
 #include <string>
 #include <vector>
-#include "epro_mutex.h"
 #include "RNG/Xoshiro256.hpp"
 #include "RNG/SplitMix64.hpp"
+#include "epro_mutex.h"
 #include "bufferio.h"
 #include "text_types.h"
 
@@ -51,10 +51,12 @@ namespace ygo {
 			static_assert(N <= 16, "Thread name on posix can't be more than 16 bytes!");
 			InternalSetThreadName(s, ws);
 		}
-		
+
 		static std::vector<SynchronizedIrrArchive> archives;
 		static irr::io::IFileSystem* filesystem;
 		static irr::IOSOperator* OSOperator;
+		static void SetupCrashDumpLogging();
+		static bool IsRunningAsAdmin();
 		static epro::stringview GetLastErrorString();
 		static bool MakeDirectory(epro::path_stringview path);
 		static bool FileCopyFD(int source, int destination);
@@ -63,8 +65,10 @@ namespace ygo {
 		static bool FileExists(epro::path_stringview path);
 		static inline epro::path_string ToPathString(epro::wstringview input);
 		static inline epro::path_string ToPathString(epro::stringview input);
-		static inline std::string ToUTF8IfNeeded(epro::path_stringview input);
-		static inline std::wstring ToUnicodeIfNeeded(epro::path_stringview input);
+		static inline std::string ToUTF8IfNeeded(epro::stringview input);
+		static inline std::string ToUTF8IfNeeded(epro::wstringview input);
+		static inline std::wstring ToUnicodeIfNeeded(epro::stringview input);
+		static inline std::wstring ToUnicodeIfNeeded(epro::wstringview input);
 		static bool SetWorkingDirectory(epro::path_stringview newpath);
 		static const epro::path_string& GetWorkingDirectory();
 		static bool FileDelete(epro::path_stringview source);
@@ -75,7 +79,7 @@ namespace ygo {
 		static std::vector<epro::path_string> FindFiles(epro::path_stringview path, const std::vector<epro::path_stringview>& extensions, int subdirectorylayers = 0);
 		/** Returned subfolder names are prefixed by the provided path */
 		static std::vector<epro::path_string> FindSubfolders(epro::path_stringview path, int subdirectorylayers = 1, bool addparentpath = true);
-		static std::vector<int> FindFiles(irr::io::IFileArchive* archive, epro::path_stringview path, const std::vector<epro::path_stringview>& extensions, int subdirectorylayers = 0);
+		static std::vector<uint32_t> FindFiles(irr::io::IFileArchive* archive, epro::path_stringview path, const std::vector<epro::path_stringview>& extensions, int subdirectorylayers = 0);
 		static irr::io::IReadFile* FindFileInArchives(epro::path_stringview path, epro::path_stringview name);
 
 #define DECLARE_STRING_VIEWED(funcname) \
@@ -123,20 +127,20 @@ namespace ygo {
 			return std::equal(a.begin(), a.end(), b.begin(), b.end(), [](const typename T::value_type& _a, const typename T::value_type& _b) {
 				return ToUpperChar(_a) == ToUpperChar(_b);
 			});
-		};
+		}
 		template<typename T>
 		static inline bool EqualIgnoreCaseFirst(const T& a, const T& b) {
 			return std::equal(a.begin(), a.end(), b.begin(), b.end(), [](const typename T::value_type& _a, const typename T::value_type& _b) {
 				return _a == ToUpperChar(_b);
 			});
-		};
+		}
 		template<typename T>
 		static inline bool CompareIgnoreCase(const T& a, const T& b) {
 			return std::lexicographical_compare(a.begin(), a.end(), b.begin(), b.end(), [](const typename T::value_type& _a, const typename T::value_type& _b) {
 				return ToUpperChar(_a) < ToUpperChar(_b);
 			});
 			//return Utils::ToUpperNoAccents(a) < Utils::ToUpperNoAccents(b);
-		};
+		}
 		static bool CreatePath(epro::path_stringview path, epro::path_string workingdir = EPRO_TEXT("./"));
 		static const epro::path_string& GetExePath();
 		static const epro::path_string& GetExeFolder();
@@ -149,7 +153,7 @@ namespace ygo {
 			SHARE_FILE,
 		};
 
-		static void SystemOpen(epro::path_stringview arg, OpenType type = OPEN_URL);
+		static void SystemOpen(epro::path_stringview arg, OpenType type);
 
 		static void Reboot();
 
@@ -175,14 +179,13 @@ namespace ygo {
 		static auto GetFileNameImpl(const epro::basic_string_view<T>& file, bool keepextension = false);
 		static RNG::SplitMix64 generator;
 	};
-	
-#define CHAR_T_STRING(text) epro::basic_string_view<T>{ std::is_same<T, wchar_t>::value ? reinterpret_cast<const T*>(L ##text) : reinterpret_cast<const T*>(text) }
+
 #define CAST(c) static_cast<T>(c)
 template<typename T>
 auto Utils::NormalizePathImpl(const epro::basic_string_view<T>& _path, bool trailing_slash) {
 	std::basic_string<T> path{ _path.data(), _path.size() };
-	static const auto cur = CHAR_T_STRING(".");
-	static const auto prev = CHAR_T_STRING("..");
+	static constexpr auto cur = CHAR_T_STRINGVIEW(T, ".");
+	static constexpr auto prev = CHAR_T_STRINGVIEW(T, "..");
 	static constexpr auto slash = CAST('/');
 	std::replace(path.begin(), path.end(), CAST('\\'), slash);
 	auto paths = TokenizeString(path, slash);
@@ -374,22 +377,26 @@ inline epro::path_string Utils::ToPathString(epro::stringview input) {
 	return { input.data(), input.size() };
 #endif
 }
-inline std::string Utils::ToUTF8IfNeeded(epro::path_stringview input) {
-#ifdef UNICODE
-	return BufferIO::EncodeUTF8(input);
-#else
+inline std::string Utils::ToUTF8IfNeeded(epro::stringview input) {
 	return { input.data(), input.size() };
-#endif
 }
-inline std::wstring Utils::ToUnicodeIfNeeded(epro::path_stringview input) {
-#ifdef UNICODE
-	return { input.data(), input.size() };
-#else
+inline std::string Utils::ToUTF8IfNeeded(epro::wstringview input) {
+	return BufferIO::EncodeUTF8(input);
+}
+inline std::wstring Utils::ToUnicodeIfNeeded(epro::stringview input) {
 	return BufferIO::DecodeUTF8(input);
-#endif
+}
+inline std::wstring Utils::ToUnicodeIfNeeded(epro::wstringview input) {
+	return { input.data(), input.size() };
 }
 
 }
 #define SetThreadName(name) SetThreadName(name, L##name)
+
+template<typename T, typename T2>
+inline T function_cast(T2 ptr) {
+	using generic_function_ptr = void (*)(void);
+	return reinterpret_cast<T>(reinterpret_cast<generic_function_ptr>(ptr));
+}
 
 #endif //UTILS_H

@@ -1,5 +1,6 @@
 #include "epro_thread.h"
-#ifndef _WIN32
+#include "config.h"
+#if EDOPRO_POSIX
 #include <arpa/inet.h>
 #endif
 #include "netserver.h"
@@ -35,20 +36,62 @@ uint8_t NetServer::net_server_read[0x20000];
 uint8_t NetServer::net_server_write[0x20000];
 uint16_t NetServer::last_sent = 0;
 
+static evconnlistener* createIpv6Listener(uint16_t port, struct event_base* net_evbase,
+										  evconnlistener_cb cb) {
+#ifdef LEV_OPT_BIND_IPV4_AND_IPV6
+	sockaddr_in6 sin;
+	memset(&sin, 0, sizeof(sin));
+	sin.sin6_family = AF_INET6;
+	evutil_inet_pton(AF_INET6, "::", &sin.sin6_addr);
+	sin.sin6_port = htons(7911);
+	return evconnlistener_new_bind(net_evbase, cb, nullptr,
+									   LEV_OPT_CLOSE_ON_FREE | LEV_OPT_REUSEABLE | LEV_OPT_BIND_IPV4_AND_IPV6, -1, (sockaddr*)&sin, sizeof(sin));
+#else
+	sockaddr_in6 sin;
+	memset(&sin, 0, sizeof(sin));
+	sin.sin6_family = AF_INET6;
+	evutil_inet_pton(AF_INET6, "::", &sin.sin6_addr);
+	sin.sin6_port = htons(7911);
+	int on = 1;
+	int off = 0;
+	evutil_socket_t fd = socket(AF_INET6, SOCK_STREAM, 0);
+	if(fd == EVUTIL_INVALID_SOCKET)
+		return nullptr;
+	if(evutil_make_socket_nonblocking(fd) != 0
+	   || setsockopt(fd, SOL_SOCKET, SO_KEEPALIVE, (char*)&on, (ev_socklen_t)sizeof(on)) != 0
+	   || evutil_make_listen_socket_reuseable(fd) != 0
+	   || setsockopt(fd, IPPROTO_IPV6, IPV6_V6ONLY, (char*)&off, (ev_socklen_t)sizeof(off)) != 0
+	   || bind(fd, (sockaddr*)&sin, sizeof(sin)) != 0) {
+		evutil_closesocket(fd);
+		return nullptr;
+	}
+	auto listener = evconnlistener_new(net_evbase, cb, nullptr, LEV_OPT_CLOSE_ON_FREE | LEV_OPT_REUSEABLE, -1, fd);
+	if(listener == nullptr)
+		evutil_closesocket(fd);
+	return listener;
+#endif
+}
+
+static evconnlistener* createIpv4Listener(uint16_t port, struct event_base* net_evbase,
+										  evconnlistener_cb cb) {
+	sockaddr_in sin;
+	memset(&sin, 0, sizeof(sin));
+	sin.sin_family = AF_INET;
+	sin.sin_addr.s_addr = htonl(INADDR_ANY);
+	sin.sin_port = htons(port);
+	return evconnlistener_new_bind(net_evbase, cb, nullptr,
+									   LEV_OPT_CLOSE_ON_FREE | LEV_OPT_REUSEABLE, -1, (sockaddr*)&sin, sizeof(sin));
+}
+
 bool NetServer::StartServer(uint16_t port) {
 	if(net_evbase)
 		return false;
 	net_evbase = event_base_new();
 	if(!net_evbase)
 		return false;
-	sockaddr_in sin;
-	memset(&sin, 0, sizeof(sin));
+	if(!(listener = createIpv6Listener(port, net_evbase, ServerAccept)))
+		listener = createIpv4Listener(port, net_evbase, ServerAccept);
 	server_port = port;
-	sin.sin_family = AF_INET;
-	sin.sin_addr.s_addr = htonl(INADDR_ANY);
-	sin.sin_port = htons(port);
-	listener = evconnlistener_new_bind(net_evbase, ServerAccept, nullptr,
-									   LEV_OPT_CLOSE_ON_FREE | LEV_OPT_REUSEABLE, -1, (sockaddr*)&sin, sizeof(sin));
 	if(!listener) {
 		event_base_free(net_evbase);
 		net_evbase = 0;
@@ -58,22 +101,75 @@ bool NetServer::StartServer(uint16_t port) {
 	epro::thread(ServerThread).detach();
 	return true;
 }
+#ifndef IPV6_JOIN_GROUP
+#define IPV6_JOIN_GROUP IPV6_ADD_MEMBERSHIP
+#endif
 bool NetServer::StartBroadcast() {
 	if(!net_evbase)
 		return false;
-	evutil_socket_t udp = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
-	ev_socklen_t opt = true;
-	setsockopt(udp, SOL_SOCKET, SO_BROADCAST, (const char*)&opt, sizeof(ev_socklen_t));
-	setsockopt(udp, SOL_SOCKET, SO_REUSEADDR, (const char*)&opt, sizeof(ev_socklen_t));
-	sockaddr_in addr;
-	memset(&addr, 0, sizeof(addr));
-	addr.sin_family = AF_INET;
-	addr.sin_port = htons(7920);
-	addr.sin_addr.s_addr = htonl(INADDR_ANY);
-	if(bind(udp, (sockaddr*)&addr, sizeof(addr)) == -1) {
-		evutil_closesocket(udp);
+	auto CreateIPV6MulticastSocketListener = []() -> evutil_socket_t {
+		evutil_socket_t udp = socket(AF_INET6, SOCK_DGRAM, IPPROTO_UDP);
+		if(udp == EVUTIL_INVALID_SOCKET)
+			return EVUTIL_INVALID_SOCKET;
+		int off = 0;
+		if(setsockopt(udp, IPPROTO_IPV6, IPV6_V6ONLY, (char*)&off, (ev_socklen_t)sizeof(off)) != 0) {
+			evutil_closesocket(udp);
+			return EVUTIL_INVALID_SOCKET;
+		}
+		int on = 1;
+		if(setsockopt(udp, SOL_SOCKET, SO_BROADCAST, (const char*)&on, (ev_socklen_t)sizeof(on)) != 0) {
+			evutil_closesocket(udp);
+			return EVUTIL_INVALID_SOCKET;
+		}
+		//If this fails we can live with it
+		setsockopt(udp, SOL_SOCKET, SO_REUSEADDR, (const char*)&on, (ev_socklen_t)sizeof(on));
+
+		sockaddr_in6 addr;
+		memset(&addr, 0, sizeof(addr));
+		addr.sin6_family = AF_INET6;
+		addr.sin6_port = htons(7920);
+		struct ipv6_mreq group;
+		group.ipv6mr_interface = 0;
+		evutil_inet_pton(AF_INET6, "FF02::1", &group.ipv6mr_multiaddr);
+
+		if(setsockopt(udp, IPPROTO_IPV6, IPV6_JOIN_GROUP, (const char*)&group, (ev_socklen_t)sizeof(group)) != 0) {
+			evutil_closesocket(udp);
+			return EVUTIL_INVALID_SOCKET;
+		}
+
+		if(bind(udp, (sockaddr*)&addr, sizeof(addr)) == -1) {
+			evutil_closesocket(udp);
+			return EVUTIL_INVALID_SOCKET;
+		}
+		return udp;
+	};
+	auto CreateIPV4BroadcastSocketListener = []() -> evutil_socket_t {
+		evutil_socket_t udp = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
+		if(udp == EVUTIL_INVALID_SOCKET)
+			return EVUTIL_INVALID_SOCKET;
+		int on = 1;
+		if(setsockopt(udp, SOL_SOCKET, SO_BROADCAST, (const char*)&on, (ev_socklen_t)sizeof(on)) != 0) {
+			evutil_closesocket(udp);
+			return EVUTIL_INVALID_SOCKET;
+		}
+		//If this fails we can live with it
+		setsockopt(udp, SOL_SOCKET, SO_REUSEADDR, (const char*)&on, (ev_socklen_t)sizeof(on));
+		sockaddr_in addr;
+		memset(&addr, 0, sizeof(addr));
+		addr.sin_family = AF_INET;
+		addr.sin_port = htons(7920);
+		addr.sin_addr.s_addr = htonl(INADDR_ANY);
+		if(bind(udp, (sockaddr*)&addr, sizeof(addr)) == -1) {
+			evutil_closesocket(udp);
+			return EVUTIL_INVALID_SOCKET;
+		}
+		return udp;
+	};
+	auto udp = CreateIPV6MulticastSocketListener();
+	if(udp == EVUTIL_INVALID_SOCKET)
+		udp = CreateIPV4BroadcastSocketListener();
+	if(udp == EVUTIL_INVALID_SOCKET)
 		return false;
-	}
 	broadcast_ev = event_new(net_evbase, udp, EV_READ | EV_PERSIST, BroadcastEvent, nullptr);
 	event_add(broadcast_ev, nullptr);
 	return true;
@@ -101,28 +197,34 @@ void NetServer::StopListen() {
 	StopBroadcast();
 }
 void NetServer::BroadcastEvent(evutil_socket_t fd, short events, void* arg) {
-	sockaddr_in bc_addr;
-	ev_socklen_t sz = sizeof(sockaddr_in);
+	(void)events;
+	(void)arg;
+	sockaddr_storage bc_addr;
+	ev_socklen_t sz = sizeof(bc_addr);
 	char buf[256];
 	int ret = recvfrom(fd, buf, 256, 0, (sockaddr*)&bc_addr, &sz);
 	if(ret == -1)
 		return;
 	HostRequest* pHR = (HostRequest*)buf;
 	if(pHR->identifier == NETWORK_CLIENT_ID) {
-		sockaddr_in sockTo;
-		sockTo.sin_addr.s_addr = bc_addr.sin_addr.s_addr;
-		sockTo.sin_family = AF_INET;
-		sockTo.sin_port = htons(7921);
-		HostPacket hp;
+		if(bc_addr.ss_family == AF_INET)
+			reinterpret_cast<sockaddr_in&>(bc_addr).sin_port = htons(7921);
+		else
+			reinterpret_cast<sockaddr_in6&>(bc_addr).sin6_port = htons(7921);
+		HostPacket hp{};
 		hp.identifier = NETWORK_SERVER_ID;
 		hp.port = server_port;
 		hp.version = PRO_VERSION;
 		hp.host = duel_mode->host_info;
 		BufferIO::EncodeUTF16(duel_mode->name, hp.name, 20);
-		sendto(fd, (const char*)&hp, sizeof(HostPacket), 0, (sockaddr*)&sockTo, sizeof(sockTo));
+		sendto(fd, (const char*)&hp, sizeof(HostPacket), 0, (sockaddr*)&bc_addr, bc_addr.ss_family == AF_INET ? sizeof(sockaddr_in) : sizeof(sockaddr_in6));
 	}
 }
-void NetServer::ServerAccept(evconnlistener* listener, evutil_socket_t fd, sockaddr* address, int socklen, void* ctx) {
+void NetServer::ServerAccept(evconnlistener* bev_listener, evutil_socket_t fd, sockaddr* address, int socklen, void* ctx) {
+	(void)bev_listener;
+	(void)address;
+	(void)socklen;
+	(void)ctx;
 	bufferevent* bev = bufferevent_socket_new(net_evbase, fd, BEV_OPT_CLOSE_ON_FREE);
 	DuelPlayer dp;
 	dp.name[0] = 0;
@@ -132,10 +234,13 @@ void NetServer::ServerAccept(evconnlistener* listener, evutil_socket_t fd, socka
 	bufferevent_setcb(bev, ServerEchoRead, nullptr, ServerEchoEvent, nullptr);
 	bufferevent_enable(bev, EV_READ);
 }
-void NetServer::ServerAcceptError(evconnlistener* listener, void* ctx) {
+void NetServer::ServerAcceptError(evconnlistener* bev_listener, void* ctx) {
+	(void)bev_listener;
+	(void)ctx;
 	event_base_loopexit(net_evbase, 0);
 }
 void NetServer::ServerEchoRead(bufferevent *bev, void *ctx) {
+	(void)ctx;
 	evbuffer* input = bufferevent_get_input(bev);
 	size_t len = evbuffer_get_length(input);
 	uint16_t packet_len = 0;
@@ -152,6 +257,7 @@ void NetServer::ServerEchoRead(bufferevent *bev, void *ctx) {
 	}
 }
 void NetServer::ServerEchoEvent(bufferevent* bev, short events, void* ctx) {
+	(void)ctx;
 	if (events & (BEV_EVENT_EOF | BEV_EVENT_ERROR)) {
 		DuelPlayer* dp = &users[bev];
 		DuelMode* dm = dp->game;
@@ -254,6 +360,8 @@ void NetServer::HandleCTOSPacket(DuelPlayer* dp, uint8_t* data, uint32_t len) {
 			NetServer::SendPacketToPlayer(dp, STOC_ERROR_MSG, vererr);
 			return;
 		}
+		pkt.info.team1 = std::max(1, std::min(pkt.info.team1, 3));
+		pkt.info.team2 = std::max(1, std::min(pkt.info.team2, 3));
 		duel_mode = new GenericDuel(pkt.info.team1, pkt.info.team2, !!(pkt.info.duel_flag_low & DUEL_RELAY), pkt.info.best_of);
 		duel_mode->etimer = event_new(net_evbase, 0, EV_TIMEOUT | EV_PERSIST, GenericDuel::GenericTimer, duel_mode);
 		timeval timeout = { 1, 0 };

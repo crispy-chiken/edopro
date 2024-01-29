@@ -4,6 +4,7 @@
 #include <unordered_map>
 #include <cstdint>
 #include <memory>
+#include "common.h"
 #include "text_types.h"
 #include "utils.h"
 
@@ -73,9 +74,14 @@ struct CardDataC {
 	static constexpr auto CARD_ARTWORK_VERSIONS_OFFSET = 10;
 
 	bool IsInArtworkOffsetRange() const {
-		if(alias == 0)
+		return IsInArtworkOffsetRange(this);
+	}
+
+	template<typename T>
+	static bool IsInArtworkOffsetRange(const T* pcard) {
+		if(pcard->alias == 0)
 			return false;
-		return (alias - code < CARD_ARTWORK_VERSIONS_OFFSET || code - alias < CARD_ARTWORK_VERSIONS_OFFSET);
+		return (pcard->alias - pcard->code < CARD_ARTWORK_VERSIONS_OFFSET || pcard->code - pcard->alias < CARD_ARTWORK_VERSIONS_OFFSET);
 	}
 };
 struct CardString {
@@ -129,7 +135,10 @@ public:
 	inline epro::wstringview GetSysString(uint32_t code)  const {
 		return _sysStrings.GetLocale(code);
 	}
-	inline epro::wstringview GetVictoryString(int code)  const {
+	inline bool HasSysString(uint32_t code)  const {
+		return _sysStrings.HasLocale(code);
+	}
+	inline epro::wstringview GetVictoryString(uint32_t code)  const {
 		return _victoryStrings.GetLocale(code);
 	}
 	inline epro::wstringview GetCounterName(uint32_t code)  const {
@@ -138,8 +147,14 @@ public:
 	inline epro::wstringview GetSetName(uint32_t code)  const {
 		return _setnameStrings.GetLocale(code, L"");
 	}
+	inline uint32_t GetRaceStringIndex(uint32_t race_idx)  const {
+		if(race_idx < 30)
+			return 1020 + race_idx;
+		//strings 1050 above are already used, read the rest from this other range
+		return (2500 - 30) + race_idx;
+	}
 	std::vector<uint16_t> GetSetCode(const std::vector<std::wstring>& setname) const;
-	std::wstring GetNumString(int num, bool bracket = false) const;
+	std::wstring GetNumString(size_t num, bool bracket = false) const;
 	epro::wstringview FormatLocation(uint32_t location, int sequence) const;
 	std::wstring FormatAttribute(uint32_t attribute) const;
 	std::wstring FormatRace(uint64_t race, bool isSkill = false) const;
@@ -164,11 +179,18 @@ private:
 	class LocaleStringHelper {
 	public:
 		indexed_map<std::wstring> map{};
-		epro::wstringview GetLocale(uint32_t code, epro::wstringview ret = DataManager::unknown_string)  const {
+		epro::wstringview GetLocale(uint32_t code, epro::wstringview ret = DataManager::unknown_string) const {
 			auto search = map.find(code);
 			if(search == map.end() || search->second.first.empty())
 				return ret;
 			return search->second.second.size() ? search->second.second : search->second.first;
+		}
+		bool HasLocale(uint32_t code) const {
+			auto search = map.find(code);
+			return search != map.end() && !search->second.first.empty();
+			if(search == map.end() || search->second.first.empty())
+				return false;
+			return true;
 		}
 		void ClearLocales() {
 			for(auto& elem : map)

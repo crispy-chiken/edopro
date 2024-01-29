@@ -3,6 +3,7 @@
 #include <IGUIComboBox.h>
 #include <IGUIStaticText.h>
 #include <IGUICheckBox.h>
+#include "config.h"
 #include "data_manager.h"
 
 namespace ygo {
@@ -25,7 +26,7 @@ void WindBotPanel::Refresh(int filterMasterRule, int lastIndex) {
 	cbBotDeck->clear();
 	cbBotEngine->clear();
 	genericEngineIdx = -1;
-	size_t i = 0;
+	int i = 0;
 	for (const auto& bot : bots) {
 		if(genericEngine == &bot)
 			continue;
@@ -37,7 +38,7 @@ void WindBotPanel::Refresh(int filterMasterRule, int lastIndex) {
 				cbBotEngine->setSelected(newIndex);
 			}
 		}
-		i++;
+		++i;
 	}
 	if(genericEngine) {
 		genericEngineIdx = cbBotEngine->addItem(genericEngine->name.data(), i);
@@ -109,11 +110,30 @@ bool WindBotPanel::LaunchSelected(int port, epro::wstringview pass) {
 	}
 	// 1 = scissors, 2 = rock, 3 = paper
 	auto res = bots[engine].Launch(port, pass, !chkMute->isChecked(), chkThrowRock->isChecked() * 2, overridedeck);
-#if !defined(_WIN32) && !defined(__ANDROID__)
+#if EDOPRO_LINUX || EDOPRO_MACOS
 	if(res > 0)
 		windbotsPids.push_back(res);
 #endif
 	return res;
+}
+
+std::wstring WindBotPanel::GetParameters(int port, epro::wstringview pass) {
+	int index = CurrentIndex();
+	int engine = CurrentEngine();
+	if(index < 0 || engine < 0) return {};
+	const wchar_t* overridedeck = nullptr;
+	std::wstring tmpdeck{};
+	const auto maxsize = (int)(bots.size() - (genericEngine != nullptr));
+	if(engine != index || index >= maxsize) {
+		if(index >= maxsize) {
+			tmpdeck = epro::format(L"{}/{}.ydk", absolute_deck_path, cbBotDeck->getItem(cbBotDeck->getSelected()));
+			overridedeck = tmpdeck.data();
+		} else {
+			overridedeck = bots[index].deckfile.data();
+		}
+	}
+	// 1 = scissors, 2 = rock, 3 = paper
+	return bots[engine].GetLaunchParameters(port, pass, !chkMute->isChecked(), chkThrowRock->isChecked() * 2, overridedeck);
 }
 
 }

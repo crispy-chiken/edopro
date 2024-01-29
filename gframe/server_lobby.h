@@ -1,21 +1,28 @@
 #ifndef SERVERLOBBY_H
 #define SERVERLOBBY_H
 
+#include "address.h"
 #include "config.h"
 #include "network.h"
 #include <atomic>
 
 namespace ygo {
 struct ServerInfo {
-	enum Protocol {
+	enum Protocol : uint8_t {
 		HTTP,
 		HTTPS,
 	} protocol{ HTTP };
+	mutable bool resolved{ false };
 	std::wstring name;
 	std::string address;
 	std::string roomaddress;
 	uint16_t duelport;
 	uint16_t roomlistport;
+	mutable epro::Host resolved_address;
+	const epro::Host& Resolved() const;
+	epro::stringview GetProtocolString() const {
+		return GetProtocolString(protocol);
+	}
 	static epro::stringview GetProtocolString(Protocol protocol) {
 		switch(protocol) {
 		case HTTP:
@@ -45,6 +52,7 @@ class ServerLobby {
 public:
 	static std::vector<RoomInfo> roomsVector;
 	static std::vector<ServerInfo> serversVector;
+	static bool IsKnownHost(epro::Host host);
 	static void RefreshRooms();
 	static bool HasRefreshedRooms();
 	static void GetRoomsThread();

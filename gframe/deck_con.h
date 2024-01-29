@@ -2,9 +2,9 @@
 #define DECK_CON_H
 
 #include "config.h"
-#include <position2d.h>
+#include <vector2d.h>
 #include <IEventReceiver.h>
-#include <unordered_map>
+#include <map>
 #include <vector>
 #include "deck.h"
 
@@ -15,7 +15,7 @@ struct CardDataC;
 class CardDataM;
 struct CardString;
 
-class DeckBuilder: public irr::IEventReceiver {
+class DeckBuilder final : public irr::IEventReceiver {
 public:
 	enum limitation_search_filters {
 		LIMITATION_FILTER_NONE,
@@ -41,7 +41,7 @@ public:
 		SEARCH_MODIFIER_ARCHETYPE_ONLY = 0x2,
 		SEARCH_MODIFIER_NEGATIVE_LOOKUP = 0x4
 	};
-	virtual bool OnEvent(const irr::SEvent& event);
+	bool OnEvent(const irr::SEvent& event) override;
 	void Initialize(bool refresh = true);
 	void Terminate(bool showmenu = true);
 	const Deck& GetCurrentDeck() const {
@@ -102,9 +102,11 @@ private:
 	DECLARE_WITH_CACHE(limitation_search_filters, filter_lm)
 #undef DECLARE_WITH_CACHE
 
-	irr::core::position2di mouse_pos;
+	irr::core::vector2di mouse_pos;
 
-	uint16_t main_and_extra_legend_count;
+	uint16_t main_and_extra_legend_count_monster;
+	uint16_t main_legend_count_spell;
+	uint16_t main_legend_count_trap;
 	uint16_t main_skill_count;
 	Deck current_deck;
 public:
@@ -121,7 +123,6 @@ public:
 	int prev_deck;
 	int prev_operation;
 
-
 	uint16_t main_monster_count;
 	uint16_t main_spell_count;
 	uint16_t main_trap_count;
@@ -135,7 +136,7 @@ public:
 	uint16_t side_spell_count;
 	uint16_t side_trap_count;
 	LFList* filterList;
-	std::map<std::wstring, std::vector<const CardDataC*>> searched_terms;
+	std::map<std::wstring, std::vector<const CardDataC*>, std::less<>> searched_terms;
 	std::vector<const CardDataC*> results;
 	std::wstring result_string;
 };

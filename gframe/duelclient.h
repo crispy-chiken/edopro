@@ -20,6 +20,7 @@
 #include "deck_manager.h"
 #include "RNG/mt19937.h"
 #include "replay.h"
+#include "address.h"
 
 namespace ygo {
 
@@ -45,18 +46,15 @@ private:
 	static epro::condition_variable cv;
 public:
 	static RNG::mt19937 rnd;
-	static uint32_t temp_ip;
+	static epro::Address temp_ip;
 	static uint16_t temp_port;
 	static uint16_t temp_ver;
 	static bool try_needed;
 	static bool is_local_host;
 	static std::atomic<bool> answered;
 
-	static std::pair<uint32_t, uint16_t> ResolveServer(epro::stringview address, uint16_t port);
-	static inline std::pair<uint32_t, uint16_t> ResolveServer(epro::wstringview address, epro::wstringview port) {
-		return ResolveServer(BufferIO::EncodeUTF8(address), static_cast<uint16_t>(std::stoi({ port.data(), port.size() })));
-	}
-	static bool StartClient(uint32_t ip, uint16_t port, uint32_t gameid = 0, bool create_game = true);
+	static void JoinFromDiscord();
+	static bool StartClient(const epro::Address& ip, uint16_t port, uint32_t gameid = 0, bool create_game = true);
 	static void ConnectTimeout(evutil_socket_t fd, short events, void* arg);
 	static void StopClient(bool is_exiting = false);
 	static void ClientRead(bufferevent* bev, void* ctx);
@@ -71,7 +69,7 @@ public:
 	static Replay last_replay;
 	static int ClientAnalyze(const uint8_t* msg, uint32_t len);
 	static int ClientAnalyze(const CoreUtils::Packet& packet) {
-		return ClientAnalyze(packet.data(), packet.buff_size());
+		return ClientAnalyze(packet.data(), static_cast<uint32_t>(packet.buff_size()));
 	}
 	static int GetSpectatorsCount() {
 		return watching;
@@ -80,7 +78,7 @@ public:
 	static bool IsConnected() {
 		return !!connect_state;
 	};
-	static void SetResponseB(const void* respB, uint32_t len) {
+	static void SetResponseB(const void* respB, size_t len) {
 		response_buf.resize(len);
 		memcpy(response_buf.data(), respB, len);
 	}
@@ -95,37 +93,52 @@ public:
 	static void SendPacketToServer(uint8_t proto) {
 		if(!client_bev)
 			return;
-		const uint16_t one = 1;
-		bufferevent_write(client_bev, &one, sizeof(one));
-		bufferevent_write(client_bev, &proto, sizeof(proto));
+		const auto res = [proto] {
+			const uint16_t message_size = sizeof(proto);
+			std::array<uint8_t, sizeof(message_size) + message_size> res;
+			memcpy(res.data(), &message_size, sizeof(message_size));
+			res[2] = proto;
+			return res;
+		}();
+		bufferevent_write(client_bev, res.data(), res.size());
 	}
 	template<typename ST>
 	static void SendPacketToServer(uint8_t proto, const ST& st) {
 		if(!client_bev)
 			return;
-		static constexpr uint16_t message_size = 1 + sizeof(ST);
-		bufferevent_write(client_bev, &message_size, sizeof(message_size));
-		bufferevent_write(client_bev, &proto, sizeof(proto));
-		bufferevent_write(client_bev, &st, sizeof(st));
+		const auto res = [proto, &st] {
+			static constexpr uint16_t message_size = sizeof(proto) + sizeof(st);
+			std::array<uint8_t, sizeof(message_size) + message_size> res;
+			memcpy(res.data(), &message_size, sizeof(message_size));
+			res[2] = proto;
+			memcpy(res.data() + 3, &st, sizeof(st));
+			return res;
+		}();
+		bufferevent_write(client_bev, res.data(), res.size());
 	}
 	static void SendBufferToServer(uint8_t proto, void* buffer, size_t len) {
 		if(!client_bev)
 			return;
-		const uint16_t message_size = static_cast<uint16_t>(1 + len);
-		bufferevent_write(client_bev, &message_size, sizeof(message_size));
-		bufferevent_write(client_bev, &proto, sizeof(proto));
-		bufferevent_write(client_bev, buffer, len);
+		const auto res = [proto, buffer, len] {
+			const uint16_t message_size = static_cast<uint16_t>(1 + len);
+			std::vector<uint8_t> res;
+			res.resize(sizeof(message_size) + message_size);
+			memcpy(res.data(), &message_size, sizeof(message_size));
+			res[2] = proto;
+			memcpy(res.data() + 3, buffer, len);
+			return res;
+		}();
+		bufferevent_write(client_bev, res.data(), res.size());
 	}
 
 	static void ReplayPrompt(bool need_header = false);
-	
+
 protected:
 	static bool is_refreshing;
 	static int match_kill;
 	static event* resp_event;
-	static std::set<std::pair<uint32_t, uint16_t>> remotes;
 public:
-	static std::vector<HostPacket> hosts;
+	static std::vector<epro::Host> hosts;
 	static void BeginRefreshHost();
 	static int RefreshThread(event_base* broadev);
 	static void BroadcastReply(evutil_socket_t fd, short events, void* arg);

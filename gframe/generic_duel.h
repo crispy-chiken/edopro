@@ -12,28 +12,28 @@
 
 namespace ygo {
 
-class GenericDuel: public DuelMode {
+class GenericDuel final : public DuelMode {
 public:
 	GenericDuel(int team1 = 1, int team2 = 1, bool relay = false, int best_of = 0);
-	virtual ~GenericDuel();
-	virtual void Chat(DuelPlayer* dp, void* pdata, int len);
-	virtual void JoinGame(DuelPlayer* dp, CTOS_JoinGame* pkt, bool is_creator);
-	virtual void LeaveGame(DuelPlayer* dp);
-	virtual void ToDuelist(DuelPlayer* dp);
-	virtual void ToObserver(DuelPlayer* dp);
-	virtual void PlayerReady(DuelPlayer* dp, bool ready);
-	virtual void PlayerKick(DuelPlayer* dp, uint8_t pos);
-	virtual void UpdateDeck(DuelPlayer* dp, void* pdata, uint32_t len);
-	virtual void StartDuel(DuelPlayer* dp);
-	virtual void HandResult(DuelPlayer* dp, uint8_t res);
-	virtual void RematchResult(DuelPlayer* dp, uint8_t rematch);
-	virtual void TPResult(DuelPlayer* dp, uint8_t tp);
-	virtual void Process();
-	virtual void Surrender(DuelPlayer* dp);
-	virtual int Analyze(CoreUtils::Packet packet);
-	virtual void GetResponse(DuelPlayer* dp, void* pdata, uint32_t len);
-	virtual void TimeConfirm(DuelPlayer* dp);
-	virtual void EndDuel();
+	~GenericDuel() override;
+	void Chat(DuelPlayer* dp, void* pdata, int len) override;
+	void JoinGame(DuelPlayer* dp, CTOS_JoinGame* pkt, bool is_creator) override;
+	void LeaveGame(DuelPlayer* dp) override;
+	void ToDuelist(DuelPlayer* dp) override;
+	void ToObserver(DuelPlayer* dp) override;
+	void PlayerReady(DuelPlayer* dp, bool ready) override;
+	void PlayerKick(DuelPlayer* dp, uint8_t pos) override;
+	void UpdateDeck(DuelPlayer* dp, void* pdata, uint32_t len) override;
+	void StartDuel(DuelPlayer* dp) override;
+	void HandResult(DuelPlayer* dp, uint8_t res) override;
+	void RematchResult(DuelPlayer* dp, uint8_t rematch) override;
+	void TPResult(DuelPlayer* dp, uint8_t tp) override;
+	void Process() override;
+	void Surrender(DuelPlayer* dp) override;
+	int Analyze(CoreUtils::Packet packet) override;
+	void GetResponse(DuelPlayer* dp, void* pdata, uint32_t len) override;
+	void TimeConfirm(DuelPlayer* dp) override;
+	void EndDuel();
 
 	void BeforeParsing(const CoreUtils::Packet& packet, int& return_value, bool& record, bool& record_last);
 	void Sending(CoreUtils::Packet& packet, int& return_value, bool& record, bool& record_last);
@@ -52,8 +52,6 @@ public:
 
 	void PseudoRefreshDeck(uint8_t player, uint32_t flag = 0x1181fff);
 	static ReplayStream replay_stream;
-
-	bool swapped;
 	
 protected:
 	std::vector<CoreUtils::Packet> packets_cache;
@@ -83,14 +81,12 @@ protected:
 		}
 	};
 	bool CheckReady();
-	uint32_t GetCount(const std::vector<duelist>& players);
-	bool CheckFree(const std::vector<duelist>& players);
-	int GetFirstFree(int start = 0);
+	int8_t GetFirstFree(int8_t start = 0);
 	void SetAtPos(DuelPlayer* dp, size_t pos);
 	duelist& GetAtPos(uint8_t pos);
 	void Catchup(DuelPlayer* dp);
-	int GetPos(DuelPlayer* dp);
-	void OrderPlayers(std::vector<duelist>& players, int offset = 0);
+	uint8_t GetPos(DuelPlayer* dp);
+	void OrderPlayers(std::vector<duelist>& players, size_t offset = 0);
 	template<typename T, typename T2>
 	inline void Iter(T& list, const T2& func) {
 		for(auto& dlr : list) {
@@ -98,15 +94,24 @@ protected:
 				func(dlr);
 		}
 	}
+
+#if (defined(_MSVC_LANG) && _MSVC_LANG >= 201703L) || __cplusplus >= 201703L
+	template<typename T, typename... Arg>
+	using FunctionResult = std::invoke_result_t<T, Arg...>;
+#else
+	template<typename T, typename... Arg>
+	using FunctionResult = std::result_of_t<T(Arg...)>;
+#endif
+
 	template<typename T, typename T2>
-	using EnableIf = std::enable_if_t<std::is_same<std::result_of_t<T(duelist&)>, void>::value == std::is_same<T2, void>::value, T2>;
-	template<typename T>
-	inline EnableIf<T, void> IteratePlayers(T func) {
+	using EnableIf = std::enable_if_t<std::is_same<FunctionResult<T, duelist&>, T2>::value, int>;
+	template<typename T, EnableIf<T, void> = 0>
+	inline void IteratePlayers(T func) {
 		Iter(players.home, func);
 		Iter(players.opposing, func);
 	}
-	template<typename T>
-	inline EnableIf<T, bool> IteratePlayers(T func) {
+	template<typename T, EnableIf<T, bool> = 0>
+	inline bool IteratePlayers(T func) {
 		for(auto& dueler : players.home) {
 			if(dueler && !func(dueler))
 				return false;
@@ -139,6 +144,7 @@ protected:
 	bool relay;
 	int best_of;
 	uint32_t match_kill;
+	bool swapped;
 	uint32_t turn_count;
 	std::vector<uint8_t> match_result;
 	uint16_t time_limit[2];

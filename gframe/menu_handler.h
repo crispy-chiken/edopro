@@ -2,6 +2,7 @@
 #define MENU_HANDLER_H
 
 #include "config.h"
+#include <unordered_map>
 #include <IEventReceiver.h>
 #include <IGUIElement.h>
 #include <map>
@@ -49,6 +50,7 @@ enum GUI {
 	EDITBOX_NUMERIC,
 	BUTTON_HP_AI_TOGGLE,
 	BUTTON_BOT_ADD,
+	BUTTON_BOT_COPY_COMMAND,
 	EDITBOX_CHAT,
 	EDITBOX_PORT_BOX,
 	COMBOBOX_BOT_DECK,
@@ -191,7 +193,7 @@ enum GUI {
 	CHECKBOX_HIDE_PASSCODE_SCOPE,
 	CHECKBOX_DRAW_FIELD_SPELLS,
 	CHECKBOX_FILTER_BOT,
-	CHECKBOX_VSYNC,
+	COMBOBOX_VSYNC,
 	EDITBOX_FPS_CAP,
 	BUTTON_FPS_CAP,
 	COMBOBOX_CORE_LOG_OUTPUT,
@@ -259,8 +261,9 @@ enum GUI {
 	BUTTON_ONLINE_MULTIPLAYER, // first button on main menu
 
 	ACTION_UPDATE_PROMPT,
+	ACTION_ACKNOWLEDGE_HOST,
 	ACTION_SHOW_CHANGELOG,
-#if defined(__linux__) && !defined(__ANDROID__) && (IRRLICHT_VERSION_MAJOR==1 && IRRLICHT_VERSION_MINOR==9)
+#if EDOPRO_LINUX && (IRRLICHT_VERSION_MAJOR==1 && IRRLICHT_VERSION_MINOR==9)
 	ACTION_TRY_WAYLAND,
 #endif
 	SETTINGS_WINDOW_ELEMENT,
@@ -277,6 +280,7 @@ enum GUI {
 	CHECKBOX_CHAIN_BUTTONS,
 	CHECKBOX_ENABLE_MUSIC,
 	CHECKBOX_ENABLE_SOUND,
+	CHECKBOX_IGNORE_DECK_CONTENTS,
 	SCROLL_MUSIC_VOLUME,
 	SCROLL_SOUND_VOLUME,
 	CHECKBOX_KEEP_FIELD_ASPECT_RATIO,
@@ -286,9 +290,9 @@ enum GUI {
 	DONT_SHUFFLE_DECK,
 };
 
-class MenuHandler : public irr::IEventReceiver {
+class MenuHandler final : public irr::IEventReceiver {
 public:
-	virtual bool OnEvent(const irr::SEvent& event);
+	bool OnEvent(const irr::SEvent& event) override;
 	void SynchronizeElement(irr::gui::IGUIElement* elem) const;
 	std::unordered_multimap<int, irr::gui::IGUIElement*> synchronized_elements;
 	int prev_operation;

@@ -99,6 +99,18 @@ struct DuelInfo {
 	uint16_t time_left[2];
 	DiscordWrapper::DiscordSecret secret;
 	bool isReplaySwapped;
+	bool HasFieldFlag(uint64_t flag) const {
+		return (flag & duel_params) == flag;
+	}
+	uint8_t GetPzoneIndex(uint8_t seq) const {
+		if(seq > 1)
+			return 0;
+		if(HasFieldFlag(DUEL_SEPARATE_PZONE)) // 6 and 7
+			return seq + 6;
+		if(HasFieldFlag(DUEL_3_COLUMNS_FIELD))// 1 and 3
+			return seq * 2 + 1;
+		return seq * 4;					      // 0 and 4
+	}
 };
 
 struct FadingUnit {
@@ -142,7 +154,7 @@ public:
 	void HideElement(irr::gui::IGUIElement* element, bool set_action = false);
 	void PopupElement(irr::gui::IGUIElement* element, int hideframe = 0);
 	void WaitFrameSignal(int frame, std::unique_lock<epro::mutex>& _lck);
-	void DrawThumb(const CardDataC* cp, irr::core::position2di pos, LFList* lflist, bool drag = false, const irr::core::recti* cliprect = nullptr, bool loadimage = true);
+	void DrawThumb(const CardDataC* cp, irr::core::vector2di pos, LFList* lflist, bool drag = false, const irr::core::recti* cliprect = nullptr, bool loadimage = true);
 	void DrawDeckBd();
 	void SaveConfig();
 	struct RepoGui {
@@ -196,6 +208,7 @@ public:
 	void ReloadCBRule();
 	void ReloadCBCurrentSkin();
 	void ReloadCBCoreLogOutput();
+	void ReloadCBVsync();
 	void ReloadElementsStrings();
 
 	void OnResize();
@@ -223,10 +236,11 @@ public:
 	irr::core::recti ResizeWin(irr::s32 x, irr::s32 y, irr::s32 x2, irr::s32 y2, bool chat = false) const;
 	void SetCentered(irr::gui::IGUIElement* elem, bool use_offset = true) const;
 	void ValidateName(irr::gui::IGUIElement* box);
-	
+
 	OCG_Duel SetupDuel(OCG_DuelOptions opts);
 	epro::path_string FindScript(epro::path_stringview script_name, irr::io::IReadFile** retarchive = nullptr);
-	std::vector<char> LoadScript(epro::stringview script_name);
+	std::vector<char> FindAndReadScript(epro::stringview script_name);
+	std::vector<char> ReadScript(epro::path_stringview script_name, irr::io::IReadFile* archive = nullptr);
 	bool LoadScript(OCG_Duel pduel, epro::stringview script_name);
 	static int ScriptReader(void* payload, OCG_Duel duel, const char* name);
 	static void MessageHandler(void* payload, const char* string, int type);
@@ -311,6 +325,7 @@ public:
 	std::vector<epro::path_string> pic_dirs;
 	std::vector<epro::path_string> cover_dirs;
 	std::vector<epro::path_string> script_dirs;
+	std::vector<epro::path_string> init_scripts;
 	std::vector<epro::path_string> cores_to_load;
 	void PopulateLocales();
 	void ApplyLocale(size_t index, bool forced = false);
@@ -323,6 +338,7 @@ public:
 	bool should_refresh_hands;
 	bool current_topdown;
 	bool current_keep_aspect_ratio;
+	bool needs_to_acknowledge_discord_host{ false };
 	//GUI
 	irr::gui::IGUIEnvironment* env;
 	irr::gui::CGUITTFont* guiFont;
@@ -364,6 +380,7 @@ public:
 	irr::gui::IGUIButton* btnTabShowSettings;
 
 	void PopulateGameHostWindows();
+	void PopulateAIBotWindow();
 	void PopulateTabSettingsWindow();
 	void PopulateSettingsWindow();
 	SettingsWindow gSettings;
@@ -577,7 +594,7 @@ public:
 	irr::gui::IGUICheckBox* chkAttribute[7];
 	//announce race
 	irr::gui::IGUIWindow* wANRace;
-	irr::gui::IGUICheckBox* chkRace[25];
+	irr::gui::IGUICheckBox* chkRace[64];
 	//cmd menu
 	irr::gui::IGUIWindow* wCmdMenu;
 	irr::gui::IGUIButton* btnActivate;

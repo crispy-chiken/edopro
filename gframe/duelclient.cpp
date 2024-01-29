@@ -1,12 +1,13 @@
 #include <algorithm>
 #include <fmt/printf.h>
 #include <fmt/chrono.h>
-#if defined(_WIN32)
+#include "config.h"
+#if EDOPRO_WINDOWS
 #include <ws2tcpip.h>
 #else
 #include <arpa/inet.h>
 #include <unistd.h>
-#if !defined(__ANDROID__)
+#if !EDOPRO_ANDROID
 #include <sys/types.h>
 #include <signal.h>
 #include <ifaddrs.h>
@@ -60,50 +61,65 @@ epro::condition_variable DuelClient::cv;
 
 bool DuelClient::is_refreshing = false;
 int DuelClient::match_kill = 0;
-std::vector<HostPacket> DuelClient::hosts;
-std::set<std::pair<uint32_t, uint16_t>> DuelClient::remotes;
+std::vector<epro::Host> DuelClient::hosts;
 event* DuelClient::resp_event = 0;
 
-uint32_t DuelClient::temp_ip = 0;
+epro::Address DuelClient::temp_ip{};
 uint16_t DuelClient::temp_port = 0;
 uint16_t DuelClient::temp_ver = 0;
 bool DuelClient::try_needed = false;
 
-std::pair<uint32_t, uint16_t> DuelClient::ResolveServer(epro::stringview address, uint16_t port) {
-	uint32_t remote_addr = inet_addr(address.data());
-	if(remote_addr == -1) {
-		evutil_addrinfo hints{};
-		evutil_addrinfo *answer = nullptr;
-		hints.ai_family = AF_INET;
-		hints.ai_socktype = SOCK_STREAM;
-		hints.ai_protocol = IPPROTO_TCP;
-		hints.ai_flags = EVUTIL_AI_ADDRCONFIG;
-		if(evutil_getaddrinfo(address.data(), fmt::to_string(port).data(), &hints, &answer) != 0)
-			throw std::runtime_error("Host not resolved");
-		auto* in_answer = reinterpret_cast<sockaddr_in*>(answer->ai_addr);
-		remote_addr = in_answer->sin_addr.s_addr;
-		evutil_freeaddrinfo(answer);
-	}
-	return { remote_addr, port };
+void DuelClient::JoinFromDiscord() {
+	const auto& secret = mainGame->dInfo.secret;
+	mainGame->isHostingOnline = true;
+	if(!StartClient(secret.host.address, secret.host.port, secret.game_id, false))
+		return;
+#define HIDE_AND_CHECK(obj) do {if(obj->isVisible()) mainGame->HideElement(obj);} while(0)
+	if(mainGame->is_building)
+		mainGame->deckBuilder.Terminate(false);
+	HIDE_AND_CHECK(mainGame->wMainMenu);
+	HIDE_AND_CHECK(mainGame->wLanWindow);
+	HIDE_AND_CHECK(mainGame->wCreateHost);
+	HIDE_AND_CHECK(mainGame->wReplay);
+	HIDE_AND_CHECK(mainGame->wSinglePlay);
+	HIDE_AND_CHECK(mainGame->wDeckEdit);
+	HIDE_AND_CHECK(mainGame->wRules);
+	HIDE_AND_CHECK(mainGame->wRoomListPlaceholder);
+	HIDE_AND_CHECK(mainGame->wCardImg);
+	HIDE_AND_CHECK(mainGame->wInfos);
+	HIDE_AND_CHECK(mainGame->btnLeaveGame);
+	HIDE_AND_CHECK(mainGame->wFileSave);
+	mainGame->device->setEventReceiver(&mainGame->menuHandler);
+#undef HIDE_AND_CHECK
 }
 
-bool DuelClient::StartClient(uint32_t ip, uint16_t port, uint32_t gameid, bool create_game) {
+bool DuelClient::StartClient(const epro::Address& ip, uint16_t port, uint32_t gameid, bool create_game) {
 	if(connect_state)
 		return false;
 	client_base = event_base_new();
 	if(!client_base)
 		return false;
-	sockaddr_in sin;
+	sockaddr_storage sin;
 	memset(&sin, 0, sizeof(sin));
-	sin.sin_family = AF_INET;
-	sin.sin_addr.s_addr = ip;
-	sin.sin_port = htons(port);
+	if(ip.family == ip.INET) {
+		sockaddr_in& sin4 = reinterpret_cast<sockaddr_in&>(sin);
+		sin4.sin_family = AF_INET;
+		ip.toInAddr(sin4.sin_addr);
+		sin4.sin_port = htons(port);
+	} else if(ip.family == ip.INET6) {
+		sockaddr_in6& sin6 = reinterpret_cast<sockaddr_in6&>(sin);
+		sin6.sin6_family = AF_INET6;
+		ip.toIn6Addr(sin6.sin6_addr);
+		sin6.sin6_port = htons(port);
+	} else
+		return false;
 	client_bev = bufferevent_socket_new(client_base, -1, BEV_OPT_CLOSE_ON_FREE | BEV_OPT_THREADSAFE);
 	bufferevent_setcb(client_bev, ClientRead, nullptr, ClientEvent, (void*)create_game);
 	bufferevent_enable(client_bev, EV_READ);
 	temp_ip = ip;
 	temp_port = port;
-	if (bufferevent_socket_connect(client_bev, (sockaddr*)&sin, sizeof(sin)) < 0) {
+	if(bufferevent_socket_connect(client_bev, reinterpret_cast<sockaddr*>(&sin),
+								  ip.family == ip.INET ? sizeof(sockaddr_in) : sizeof(sockaddr_in6)) < 0) {
 		bufferevent_free(client_bev);
 		event_base_free(client_base);
 		client_bev = 0;
@@ -114,12 +130,12 @@ bool DuelClient::StartClient(uint32_t ip, uint16_t port, uint32_t gameid, bool c
 	rnd.seed(0);
 	if(!create_game) {
 		timeval timeout = {5, 0};
-		event* resp_event = event_new(client_base, 0, EV_TIMEOUT, ConnectTimeout, 0);
-		event_add(resp_event, &timeout);
+		event* timeout_event = event_new(client_base, 0, EV_TIMEOUT, ConnectTimeout, 0);
+		event_add(timeout_event, &timeout);
 	}
 	mainGame->dInfo.secret.game_id = gameid;
-	mainGame->dInfo.secret.server_port = port;
-	mainGame->dInfo.secret.server_address = ip;
+	mainGame->dInfo.secret.host.port = port;
+	mainGame->dInfo.secret.host.address = ip;
 	mainGame->dInfo.isCatchingUp = false;
 	mainGame->dInfo.checkRematch = false;
 	mainGame->frameSignal.SetNoWait(true);
@@ -132,6 +148,9 @@ bool DuelClient::StartClient(uint32_t ip, uint16_t port, uint32_t gameid, bool c
 	return true;
 }
 void DuelClient::ConnectTimeout(evutil_socket_t fd, short events, void* arg) {
+	(void)fd;
+	(void)events;
+	(void)arg;
 	if(connect_state & 0x7)
 		return;
 	if(!is_closing) {
@@ -159,7 +178,7 @@ void DuelClient::StopClient(bool is_exiting) {
 		to_analyze.clear();
 		event_base_loopbreak(client_base);
 		to_analyze_mutex.unlock();
-#if !defined(_WIN32) && !defined(__ANDROID__)
+#if EDOPRO_LINUX || EDOPRO_MACOS
 		for(auto& pid : mainGame->gBot.windbotsPids) {
 			kill(pid, SIGKILL);
 			(void)waitpid(pid, nullptr, 0);
@@ -175,6 +194,7 @@ void DuelClient::StopClient(bool is_exiting) {
 	mainGame->frameSignal.SetNoWait(false);
 }
 void DuelClient::ClientRead(bufferevent* bev, void* ctx) {
+	(void)ctx;
 	evbuffer* input = bufferevent_get_input(bev);
 	size_t len = evbuffer_get_length(input);
 	uint16_t packet_len = 0;
@@ -196,6 +216,7 @@ void DuelClient::ClientRead(bufferevent* bev, void* ctx) {
 #define INTERNAL_HANDLE_CONNECTION_END 0
 
 void DuelClient::ClientEvent(bufferevent *bev, short events, void *ctx) {
+	(void)bev;
 	if (events & BEV_EVENT_CONNECTED) {
 		bool create_game = (size_t)ctx != 0;
 		CTOS_PlayerInfo cspi;
@@ -310,7 +331,7 @@ void DuelClient::ParserThread() {
 
 void DuelClient::HandleSTOCPacketLanSync(std::vector<uint8_t>&& data) {
 	uint8_t pktType = data[0];
-	if(pktType != STOC_CHAT && pktType != STOC_CHAT_2) {
+	if(pktType != STOC_CHAT_2) {
 		to_analyze_mutex.lock();
 		to_analyze.push_back(std::move(data));
 		to_analyze_mutex.unlock();
@@ -321,45 +342,6 @@ void DuelClient::HandleSTOCPacketLanSync(std::vector<uint8_t>&& data) {
 		return;
 	auto* pdata = data.data() + 1;
 	switch(pktType) {
-		case STOC_CHAT: {
-			auto pkt = BufferIO::getStruct<STOC_Chat>(pdata, data.size());
-			int player = pkt.player;
-			int type = -1;
-			if(player < mainGame->dInfo.team1 + mainGame->dInfo.team2) {
-				int team1 = mainGame->dInfo.team1;
-				int team2 = mainGame->dInfo.team2;
-				if((mainGame->dInfo.isTeam1 && !mainGame->dInfo.isFirst) ||
-					(!mainGame->dInfo.isTeam1 && mainGame->dInfo.isFirst)) {
-					std::swap(team1, team2);
-				}
-				if(player >= team1) {
-					player -= team1;
-					type = 1;
-				} else {
-					type = 0;
-				}
-				if((!mainGame->dInfo.isFirst && mainGame->dInfo.isTeam1) ||
-					(mainGame->dInfo.isFirst && !mainGame->dInfo.isTeam1))
-					type = 1 - type;
-				if(((type == 1 && mainGame->dInfo.isTeam1) || (type == 0 && !mainGame->dInfo.isTeam1)) && mainGame->tabSettings.chkIgnoreOpponents->isChecked())
-					return;
-			} else {
-				type = 2;
-				if(player == 8) { //system custom message.
-					if(mainGame->tabSettings.chkIgnoreOpponents->isChecked())
-						return;
-				} else if(player < 11 || player > 19) {
-					if(mainGame->tabSettings.chkIgnoreSpectators->isChecked())
-						return;
-					player = 10;
-				}
-			}
-			wchar_t msg[256];
-			BufferIO::DecodeUTF16(pkt.msg, msg, 256);
-			std::lock_guard<epro::mutex> lock(mainGame->gMutex);
-			mainGame->AddChatMsg(msg, player, type);
-			break;
-		}
 		case STOC_CHAT_2: {
 			auto pkt = BufferIO::getStruct<STOC_Chat2>(pdata, data.size());
 			if(pkt.type == STOC_Chat2::PTYPE_DUELIST && (mainGame->dInfo.player_type >= 7 || !pkt.is_team) && mainGame->tabSettings.chkIgnoreOpponents->isChecked())
@@ -452,8 +434,8 @@ void DuelClient::HandleSTOCPacketLanAsync(const std::vector<uint8_t>& data) {
 	}
 	case STOC_GAME_MSG: {
 		analyzeMutex.lock();
-		ClientAnalyze(pdata, len - 1);
 		answered = false;
+		ClientAnalyze(pdata, static_cast<uint32_t>(len - 1));
 		analyzeMutex.unlock();
 		break;
 	}
@@ -478,8 +460,11 @@ void DuelClient::HandleSTOCPacketLanAsync(const std::vector<uint8_t>& data) {
 			int stringid = 1406;
 			switch(pkt.error) {
 				case JoinError::JERR_UNABLE:	stringid--;
+					/*fallthrough*/
 				case JoinError::JERR_PASSWORD:	stringid--;
+					/*fallthrough*/
 				case JoinError::JERR_REFUSED:	stringid--;
+					/*fallthrough*/
 			}
 			if(stringid < 1406)
 				mainGame->PopupMessage(gDataManager->GetSysString(stringid));
@@ -662,6 +647,8 @@ void DuelClient::HandleSTOCPacketLanAsync(const std::vector<uint8_t>& data) {
 		mainGame->btnSideReload->setVisible(true);
 		if(mainGame->wQuery->isVisible())
 			mainGame->HideElement(mainGame->wQuery);
+		if(mainGame->wOptions->isVisible())
+			mainGame->HideElement(mainGame->wOptions);
 		if(mainGame->wPosSelect->isVisible())
 			mainGame->HideElement(mainGame->wPosSelect);
 		if(mainGame->wCardSelect->isVisible())
@@ -738,7 +725,7 @@ void DuelClient::HandleSTOCPacketLanAsync(const std::vector<uint8_t>& data) {
 		mainGame->dInfo.duel_params = params;
 		mainGame->dInfo.isRelay = params & DUEL_RELAY;
 		params &= ~DUEL_RELAY;
-		pkt.info.no_shuffle_deck = pkt.info.no_shuffle_deck || ((params & DUEL_PSEUDO_SHUFFLE) != 0);
+		pkt.info.no_shuffle_deck = (pkt.info.no_shuffle_deck != 0) || ((params & DUEL_PSEUDO_SHUFFLE) != 0);
 		params &= ~DUEL_PSEUDO_SHUFFLE;
 		mainGame->dInfo.team1 = pkt.info.team1;
 		mainGame->dInfo.team2 = pkt.info.team2;
@@ -770,11 +757,23 @@ void DuelClient::HandleSTOCPacketLanAsync(const std::vector<uint8_t>& data) {
 			} else if(params  == DUEL_MODE_GOAT) {
 				str.append(epro::format(L"*{}\n", gDataManager->GetSysString(1248)));
 			} else {
-				uint64_t filter = 0x100;
-				for(int i = 0; filter && i < sizeofarr(mainGame->chkCustomRules); ++i, filter <<= 1)
-					if(params & filter) {
+				auto custom_rules_params = params & ~(DUEL_TEST_MODE | DUEL_ATTACK_FIRST_TURN | DUEL_PSEUDO_SHUFFLE | DUEL_SIMPLE_AI | DUEL_RELAY);
+				for(uint32_t i = 0; i < sizeofarr(mainGame->chkCustomRules); ++i) {
+					bool set = false;
+					if(i == 19)
+						set = custom_rules_params & DUEL_USE_TRAPS_IN_NEW_CHAIN;
+					else if(i == 20)
+						set = custom_rules_params & DUEL_6_STEP_BATLLE_STEP;
+					else if(i == 21)
+						set = custom_rules_params & DUEL_TRIGGER_WHEN_PRIVATE_KNOWLEDGE;
+					else if(i > 21)
+						set = custom_rules_params & 0x100ULL << (i - 3);
+					else
+						set = custom_rules_params & 0x100ULL << i;
+					if(set) {
 						strR.append(epro::format(L"*{}\n", gDataManager->GetSysString(1631 + i)));
 					}
+				}
 				str.append(epro::format(L"*{}\n", gDataManager->GetSysString(1630)));
 			}
 		} else if (rule != DEFAULT_DUEL_RULE) {
@@ -829,8 +828,8 @@ void DuelClient::HandleSTOCPacketLanAsync(const std::vector<uint8_t>& data) {
 			}
 		}
 		std::lock_guard<epro::mutex> lock(mainGame->gMutex);
-		matManager.SetActiveVertices((mainGame->dInfo.duel_params & DUEL_3_COLUMNS_FIELD) ? 1 : 0,
-									 (mainGame->dInfo.duel_field == 3 || mainGame->dInfo.duel_field == 5) ? 0 : 1);
+		matManager.SetActiveVertices(mainGame->dInfo.HasFieldFlag(DUEL_3_COLUMNS_FIELD),
+									 !mainGame->dInfo.HasFieldFlag(DUEL_SEPARATE_PZONE));
 		int x = (pkt.info.team1 + pkt.info.team2 >= 5) ? 60 : 0;
 		mainGame->btnHostPrepOB->setRelativePosition(mainGame->Scale<irr::s32>(10, 180 + x, 110, 205 + x));
 		mainGame->stHostPrepOB->setRelativePosition(mainGame->Scale<irr::s32>(10, 210 + x, 270, 230 + x));
@@ -844,7 +843,7 @@ void DuelClient::HandleSTOCPacketLanAsync(const std::vector<uint8_t>& data) {
 		mainGame->wHostPrepare->setRelativePosition(mainGame->ResizeWin(270, 120, 750, 440 + x));
 		mainGame->wHostPrepareR->setRelativePosition(mainGame->ResizeWin(750, 120, 950, 440 + x));
 		mainGame->wHostPrepareL->setRelativePosition(mainGame->ResizeWin(70, 120, 270, 440 + x));
-		mainGame->gBot.window->setRelativePosition(irr::core::position2di(mainGame->wHostPrepare->getAbsolutePosition().LowerRightCorner.X, mainGame->wHostPrepare->getAbsolutePosition().UpperLeftCorner.Y));
+		mainGame->gBot.window->setRelativePosition(irr::core::vector2di(mainGame->wHostPrepare->getAbsolutePosition().LowerRightCorner.X, mainGame->wHostPrepare->getAbsolutePosition().UpperLeftCorner.Y));
 		for(int i = 0; i < 6; i++) {
 			mainGame->chkHostPrepReady[i]->setVisible(false);
 			mainGame->chkHostPrepReady[i]->setChecked(false);
@@ -1020,6 +1019,8 @@ void DuelClient::HandleSTOCPacketLanAsync(const std::vector<uint8_t>& data) {
 			mainGame->btnCancelOrFinish->setVisible(false);
 			if(mainGame->wQuery->isVisible())
 				mainGame->HideElement(mainGame->wQuery);
+			if(mainGame->wOptions->isVisible())
+				mainGame->HideElement(mainGame->wOptions);
 			if(mainGame->wPosSelect->isVisible())
 				mainGame->HideElement(mainGame->wPosSelect);
 			if(mainGame->wCardSelect->isVisible())
@@ -1069,6 +1070,45 @@ void DuelClient::HandleSTOCPacketLanAsync(const std::vector<uint8_t>& data) {
 			DuelClient::SendPacketToServer(CTOS_TIME_CONFIRM);
 		mainGame->dInfo.time_player = lplayer;
 		mainGame->dInfo.time_left[lplayer] = pkt.left_time;
+		break;
+	}
+	case STOC_CHAT:	{
+		auto pkt = BufferIO::getStruct<STOC_Chat>(pdata, data.size());
+		int player = pkt.player;
+		int type = -1;
+		if(player < mainGame->dInfo.team1 + mainGame->dInfo.team2) {
+			int team1 = mainGame->dInfo.team1;
+			int team2 = mainGame->dInfo.team2;
+			if((mainGame->dInfo.isTeam1 && !mainGame->dInfo.isFirst) ||
+			   (!mainGame->dInfo.isTeam1 && mainGame->dInfo.isFirst)) {
+				std::swap(team1, team2);
+			}
+			if(player >= team1) {
+				player -= team1;
+				type = 1;
+			} else {
+				type = 0;
+			}
+			if((!mainGame->dInfo.isFirst && mainGame->dInfo.isTeam1) ||
+			   (mainGame->dInfo.isFirst && !mainGame->dInfo.isTeam1))
+				type = 1 - type;
+			if(((type == 1 && mainGame->dInfo.isTeam1) || (type == 0 && !mainGame->dInfo.isTeam1)) && mainGame->tabSettings.chkIgnoreOpponents->isChecked())
+				return;
+		} else {
+			type = 2;
+			if(player == 8) { //system custom message.
+				if(mainGame->tabSettings.chkIgnoreOpponents->isChecked())
+					return;
+			} else if(player < 11 || player > 19) {
+				if(mainGame->tabSettings.chkIgnoreSpectators->isChecked())
+					return;
+				player = 10;
+			}
+		}
+		wchar_t msg[256];
+		BufferIO::DecodeUTF16(pkt.msg, msg, 256);
+		std::lock_guard<epro::mutex> lock(mainGame->gMutex);
+		mainGame->AddChatMsg(msg, player, type);
 		break;
 	}
 	case STOC_HS_PLAYER_ENTER: {
@@ -1170,6 +1210,8 @@ void DuelClient::HandleSTOCPacketLanAsync(const std::vector<uint8_t>& data) {
 		mainGame->dInfo.checkRematch = true;
 		if(mainGame->wQuery->isVisible())
 			mainGame->HideElement(mainGame->wQuery);
+		if(mainGame->wOptions->isVisible())
+			mainGame->HideElement(mainGame->wOptions);
 		if(mainGame->wPosSelect->isVisible())
 			mainGame->HideElement(mainGame->wPosSelect);
 		if(mainGame->wCardSelect->isVisible())
@@ -1413,8 +1455,8 @@ int DuelClient::ClientAnalyze(const uint8_t* msg, uint32_t len) {
 			std::vector<std::wstring> tmp;
 			for(uint32_t filter = 0x1; filter != 0; filter <<= 1) {
 				if(uint32_t s = filter & data) {
-					uint32_t player_string;
-					uint32_t zone_string;
+					uint32_t player_string{};
+					uint32_t zone_string{};
 					uint32_t seq = 1;
 					if(s & 0x60) {
 						player_string = 1081;
@@ -1660,7 +1702,7 @@ int DuelClient::ClientAnalyze(const uint8_t* msg, uint32_t len) {
 				pcard = new ClientCard{};
 				pcard->code = code;
 				pcard->controler = con;
-				pcard->sequence = mainGame->dField.limbo_temp.size();
+				pcard->sequence = static_cast<uint32_t>(mainGame->dField.limbo_temp.size());
 				mainGame->dField.limbo_temp.push_back(pcard);
 			}
 			mainGame->dField.activatable_cards.push_back(pcard);
@@ -1751,8 +1793,7 @@ int DuelClient::ClientAnalyze(const uint8_t* msg, uint32_t len) {
 				mainGame->dField.extra_act[pcard->controler] = true;
 				break;
 			case LOCATION_SZONE: {
-				int seq = mainGame->dInfo.duel_field == 4 ? (mainGame->dInfo.duel_params & DUEL_3_COLUMNS_FIELD) ? 1 : 0 : 6;
-				if((pcard->type & TYPE_PENDULUM) && !pcard->equipTarget && pcard->sequence == seq)
+				if((pcard->type & TYPE_PENDULUM) && !pcard->equipTarget && pcard->sequence == mainGame->dInfo.GetPzoneIndex(0))
 					mainGame->dField.pzone_act[pcard->controler] = true;
 				break;
 			}
@@ -1818,7 +1859,7 @@ int DuelClient::ClientAnalyze(const uint8_t* msg, uint32_t len) {
 				pcard = new ClientCard{};
 				pcard->code = code;
 				pcard->controler = con;
-				pcard->sequence = mainGame->dField.limbo_temp.size();
+				pcard->sequence = static_cast<uint32_t>(mainGame->dField.limbo_temp.size());
 				mainGame->dField.limbo_temp.push_back(pcard);
 			}
 			mainGame->dField.activatable_cards.push_back(pcard);
@@ -1927,7 +1968,7 @@ int DuelClient::ClientAnalyze(const uint8_t* msg, uint32_t len) {
 				pcard = mainGame->dField.GetCard(info.controler, info.location & (~LOCATION_OVERLAY) & 0xff, info.sequence)->overlayed[info.position];
 			else if (info.location == 0) {
 				pcard = new ClientCard{};
-				pcard->sequence = mainGame->dField.limbo_temp.size();
+				pcard->sequence = static_cast<uint32_t>(mainGame->dField.limbo_temp.size());
 				mainGame->dField.limbo_temp.push_back(pcard);
 				panelmode = true;
 			} else
@@ -1984,7 +2025,7 @@ int DuelClient::ClientAnalyze(const uint8_t* msg, uint32_t len) {
 				pcard = mainGame->dField.GetCard(info.controler, info.location & (~LOCATION_OVERLAY) & 0xff, info.sequence)->overlayed[info.position];
 			else if (info.location == 0) {
 				pcard = new ClientCard{};
-				pcard->sequence = mainGame->dField.limbo_temp.size();
+				pcard->sequence = static_cast<uint32_t>(mainGame->dField.limbo_temp.size());
 				mainGame->dField.limbo_temp.push_back(pcard);
 				panelmode = true;
 			} else
@@ -2007,7 +2048,7 @@ int DuelClient::ClientAnalyze(const uint8_t* msg, uint32_t len) {
 				pcard = mainGame->dField.GetCard(info.controler, info.location & (~LOCATION_OVERLAY) & 0xff, info.sequence)->overlayed[info.position];
 			else if (info.location == 0) {
 				pcard = new ClientCard{};
-				pcard->sequence = mainGame->dField.limbo_temp.size();
+				pcard->sequence = static_cast<uint32_t>(mainGame->dField.limbo_temp.size());
 				mainGame->dField.limbo_temp.push_back(pcard);
 				panelmode = true;
 			} else
@@ -2045,7 +2086,7 @@ int DuelClient::ClientAnalyze(const uint8_t* msg, uint32_t len) {
 	}
 	case MSG_SELECT_CHAIN: {
 		/*uint8_t selecting_player = */BufferIO::Read<uint8_t>(pbuf);
-		uint32_t count;
+		uint32_t count{};
 		if(mainGame->dInfo.compat_mode)
 			count = BufferIO::Read<uint8_t>(pbuf);
 		const auto specount = BufferIO::Read<uint8_t>(pbuf);
@@ -2079,7 +2120,7 @@ int DuelClient::ClientAnalyze(const uint8_t* msg, uint32_t len) {
 				pcard = new ClientCard{};
 				pcard->code = code;
 				pcard->controler = info.controler;
-				pcard->sequence = mainGame->dField.limbo_temp.size();
+				pcard->sequence = static_cast<uint32_t>(mainGame->dField.limbo_temp.size());
 				mainGame->dField.limbo_temp.push_back(pcard);
 			}
 			mainGame->dField.activatable_cards.push_back(pcard);
@@ -2157,7 +2198,8 @@ int DuelClient::ClientAnalyze(const uint8_t* msg, uint32_t len) {
 	case MSG_SELECT_PLACE:
 	case MSG_SELECT_DISFIELD: {
 		uint8_t selecting_player = mainGame->LocalPlayer(BufferIO::Read<uint8_t>(pbuf));
-		mainGame->dField.select_min = BufferIO::Read<uint8_t>(pbuf);
+		//fluo passes this as 0 if the selection can be "canceled", ignore for now
+		mainGame->dField.select_min = std::max<uint8_t>(BufferIO::Read<uint8_t>(pbuf), 1);
 		uint32_t flag = BufferIO::Read<uint32_t>(pbuf);
 		if(selecting_player == 1) {
 			flag = flag << 16 | flag >> 16;
@@ -2186,7 +2228,7 @@ int DuelClient::ClientAnalyze(const uint8_t* msg, uint32_t len) {
 					if(mainGame->dField.selectable_field & (1 << i))
 						positions.push_back(i);
 				}
-				char res = positions[(std::uniform_int_distribution<>(0, positions.size() - 1))(rnd)];
+				char res = positions[(std::uniform_int_distribution<>(0, static_cast<int>(positions.size() - 1)))(rnd)];
 				respbuf[0] = mainGame->LocalPlayer((res < 16) ? 0 : 1);
 				respbuf[1] = ((1 << res) & 0x7f007f) ? LOCATION_MZONE : LOCATION_SZONE;
 				respbuf[2] = (res%16) - (2 * (respbuf[1] - LOCATION_MZONE));
@@ -2453,13 +2495,13 @@ int DuelClient::ClientAnalyze(const uint8_t* msg, uint32_t len) {
 		if(mainGame->dInfo.isCatchingUp)
 			return true;
 		mainGame->AddLog(epro::sprintf(gDataManager->GetSysString(207), count));
-		for(uint32_t i = 0; i < count; ++i) {
+		constexpr float milliseconds = 5.0f * 1000.0f / 60.0f;
+		float shift = -0.75f / milliseconds;
+		if(!!player ^ mainGame->current_topdown) shift *= -1.0f;
+		for(auto it = mainGame->dField.deck[player].crbegin(), end = it + count; it != end; ++it) {
 			std::unique_lock<epro::mutex> lock(mainGame->gMutex);
-			pcard = *(mainGame->dField.deck[player].rbegin() + i);
+			pcard = *it;
 			mainGame->AddLog(epro::format(L"*[{}]", gDataManager->GetName(pcard->code)), pcard->code);
-			constexpr float milliseconds = 5.0f * 1000.0f / 60.0f;
-			float shift = -0.75f / milliseconds;
-			if (player == 1) shift *= -1.0f;
 			pcard->dPos.set(shift, 0, 0);
 			if(!mainGame->dField.deck_reversed && !pcard->is_reversed)
 				pcard->dRot.set(0, irr::core::PI / milliseconds, 0);
@@ -2478,19 +2520,18 @@ int DuelClient::ClientAnalyze(const uint8_t* msg, uint32_t len) {
 		uint32_t code;
 		ClientCard* pcard;
 		mainGame->dField.selectable_cards.clear();
-		const auto backit = mainGame->dField.extra[player].rbegin() + mainGame->dField.extra_p_count[player];
-		for(uint32_t i = 0; i < count; ++i) {
+		for(auto it = mainGame->dField.extra[player].crbegin(), end = it + count; it != end; ++it) {
 			code = BufferIO::Read<uint32_t>(pbuf);
 			pbuf += (mainGame->dInfo.compat_mode) ? 3 : 6;
-			pcard = *(backit + i);
+			pcard = *it;
 			if (code != 0)
 				pcard->SetCode(code);
 		}
 		if(mainGame->dInfo.isCatchingUp)
 			return true;
 		mainGame->AddLog(epro::sprintf(gDataManager->GetSysString(207), count));
-		for(uint32_t i = 0; i < count; ++i) {
-			pcard = *(backit + i);
+		for(auto it = mainGame->dField.extra[player].crbegin(), end = it + count; it != end; ++it) {
+			pcard = *it;
 			std::unique_lock<epro::mutex> lock(mainGame->gMutex);
 			mainGame->AddLog(epro::format(L"*[{}]", gDataManager->GetName(pcard->code)), pcard->code);
 			constexpr float milliseconds = 5.0f * 1000.0f / 60.0f;
@@ -2514,7 +2555,6 @@ int DuelClient::ClientAnalyze(const uint8_t* msg, uint32_t len) {
 		uint8_t c;
 		std::vector<ClientCard*> field_confirm;
 		std::vector<ClientCard*> panel_confirm;
-		ClientCard* pcard;
 		if(mainGame->dInfo.isCatchingUp)
 			return true;
 		mainGame->AddLog(epro::sprintf(gDataManager->GetSysString(208), count));
@@ -2524,9 +2564,10 @@ int DuelClient::ClientAnalyze(const uint8_t* msg, uint32_t len) {
 			l = BufferIO::Read<uint8_t>(pbuf);
 			s = CompatRead<uint8_t, uint32_t>(pbuf);
 			std::unique_lock<epro::mutex> lock(mainGame->gMutex);
+			ClientCard* pcard;
 			if (l == 0) {
 				pcard = new ClientCard{};
-				pcard->sequence = mainGame->dField.limbo_temp.size();
+				pcard->sequence = static_cast<uint32_t>(mainGame->dField.limbo_temp.size());
 				mainGame->dField.limbo_temp.push_back(pcard);
 			} else
 				pcard = mainGame->dField.GetCard(c, l, s);
@@ -2552,7 +2593,7 @@ int DuelClient::ClientAnalyze(const uint8_t* msg, uint32_t len) {
 						panel_confirm.push_back(pcard);
 				}
 			} else {
-				if(!mainGame->dInfo.isReplay || (l & LOCATION_ONFIELD) | (l & LOCATION_HAND && gGameConfig->hideHandsInReplays))
+				if(!mainGame->dInfo.isReplay || (l & LOCATION_ONFIELD) || (l & LOCATION_HAND && gGameConfig->hideHandsInReplays))
 					field_confirm.push_back(pcard);
 			}
 		}
@@ -2851,7 +2892,7 @@ int DuelClient::ClientAnalyze(const uint8_t* msg, uint32_t len) {
 	}
 	case MSG_NEW_TURN: {
 		Play(SoundManager::SFX::NEXT_TURN);
-		const auto player = mainGame->LocalPlayer(BufferIO::Read<uint8_t>(pbuf));
+		/*const auto player = */mainGame->LocalPlayer(BufferIO::Read<uint8_t>(pbuf));
 		auto lock = LockIf();
 		mainGame->dInfo.turn++;
 		if(!mainGame->dInfo.isReplay && !mainGame->dInfo.isSingleMode && mainGame->dInfo.player_type < (mainGame->dInfo.team1 + mainGame->dInfo.team2)) {
@@ -3088,7 +3129,7 @@ int DuelClient::ClientAnalyze(const uint8_t* msg, uint32_t len) {
 				mainGame->dField.overlay_cards.insert(pcard);
 				pcard->overlayTarget = olcard;
 				pcard->location = LOCATION_OVERLAY;
-				pcard->sequence = olcard->overlayed.size() - 1;
+				pcard->sequence = static_cast<uint32_t>(olcard->overlayed.size() - 1);
 				if(!mainGame->dInfo.isCatchingUp && (olcard->location & LOCATION_ONFIELD)) {
 					mainGame->dField.MoveCard(pcard, 10);
 					if(previous.location == LOCATION_HAND)
@@ -3107,7 +3148,7 @@ int DuelClient::ClientAnalyze(const uint8_t* msg, uint32_t len) {
 				mainGame->dField.AddCard(pcard, current.controler, current.location, current.sequence);
 				mainGame->dField.overlay_cards.erase(pcard);
 				for(size_t i = 0; i < olcard->overlayed.size(); ++i) {
-					olcard->overlayed[i]->sequence = i;
+					olcard->overlayed[i]->sequence = static_cast<uint32_t>(i);
 					if(!mainGame->dInfo.isCatchingUp)
 						mainGame->dField.MoveCard(olcard->overlayed[i], 2);
 				}
@@ -3122,11 +3163,11 @@ int DuelClient::ClientAnalyze(const uint8_t* msg, uint32_t len) {
 				ClientCard* olcard2 = mainGame->dField.GetCard(current.controler, current.location & (~LOCATION_OVERLAY) & 0xff, current.sequence);
 				olcard1->overlayed.erase(olcard1->overlayed.begin() + pcard->sequence);
 				olcard2->overlayed.push_back(pcard);
-				pcard->sequence = olcard2->overlayed.size() - 1;
+				pcard->sequence = static_cast<uint32_t>(olcard2->overlayed.size() - 1);
 				pcard->location = LOCATION_OVERLAY;
 				pcard->overlayTarget = olcard2;
 				for(size_t i = 0; i < olcard1->overlayed.size(); ++i) {
-					olcard1->overlayed[i]->sequence = i;
+					olcard1->overlayed[i]->sequence = static_cast<uint32_t>(i);
 					if(!mainGame->dInfo.isCatchingUp)
 						mainGame->dField.MoveCard(olcard1->overlayed[i], 2);
 				}
@@ -3452,9 +3493,9 @@ int DuelClient::ClientAnalyze(const uint8_t* msg, uint32_t len) {
 		const auto player = mainGame->LocalPlayer(BufferIO::Read<uint8_t>(pbuf));
 		const auto count = CompatRead<uint8_t, uint32_t>(pbuf);
 		auto lock = LockIf();
-		ClientCard* pcard;
-		for(uint32_t i = 0; i < count; ++i) {
-			pcard = mainGame->dField.GetCard(player, LOCATION_DECK, mainGame->dField.deck[player].size() - 1 - i);
+		auto& deck = mainGame->dField.deck[player];
+		for (auto it = deck.crbegin(), end = it + count; it != end; ++it) {
+			auto pcard = *it;
 			const auto code = BufferIO::Read<uint32_t>(pbuf);
 			if(!mainGame->dInfo.compat_mode) {
 				/*uint32_t position =*/BufferIO::Read<uint32_t>(pbuf);
@@ -3466,12 +3507,12 @@ int DuelClient::ClientAnalyze(const uint8_t* msg, uint32_t len) {
 		}
 		for(uint32_t i = 0; i < count; ++i) {
 			Play(SoundManager::SFX::DRAW);
-			pcard = mainGame->dField.GetCard(player, LOCATION_DECK, mainGame->dField.deck[player].size() - 1);
-			mainGame->dField.deck[player].pop_back();
+			const auto pcard = deck.back();
+			deck.pop_back();
 			mainGame->dField.AddCard(pcard, player, LOCATION_HAND, 0);
 			if(!mainGame->dInfo.isCatchingUp) {
-				for(auto& pcard : mainGame->dField.hand[player])
-					mainGame->dField.MoveCard(pcard, 10);
+				for(auto& hand_pcard : mainGame->dField.hand[player])
+					mainGame->dField.MoveCard(hand_pcard, 10);
 				mainGame->WaitFrameSignal(5, lock);
 			}
 		}
@@ -3716,13 +3757,13 @@ int DuelClient::ClientAnalyze(const uint8_t* msg, uint32_t len) {
 			return true;
 		CoreUtils::loc_info info1 = CoreUtils::ReadLocInfo(pbuf, mainGame->dInfo.compat_mode);
 		info1.controler = mainGame->LocalPlayer(info1.controler);
-		const auto aatk = BufferIO::Read<uint32_t>(pbuf);
-		const auto adef = BufferIO::Read<uint32_t>(pbuf);
+		const auto aatk = static_cast<int32_t>(BufferIO::Read<uint32_t>(pbuf));
+		const auto adef = static_cast<int32_t>(BufferIO::Read<uint32_t>(pbuf));
 		/*const auto da = */BufferIO::Read<uint8_t>(pbuf);
 		CoreUtils::loc_info info2 = CoreUtils::ReadLocInfo(pbuf, mainGame->dInfo.compat_mode);
 		info2.controler = mainGame->LocalPlayer(info2.controler);
-		const auto datk = BufferIO::Read<uint32_t>(pbuf);
-		const auto ddef = BufferIO::Read<uint32_t>(pbuf);
+		const auto datk = static_cast<int32_t>(BufferIO::Read<uint32_t>(pbuf));
+		const auto ddef = static_cast<int32_t>(BufferIO::Read<uint32_t>(pbuf));
 		/*const auto dd = */BufferIO::Read<uint8_t>(pbuf);
 		std::lock_guard<epro::mutex> lock(mainGame->gMutex);
 		ClientCard* pcard = mainGame->dField.GetCard(info1.controler, info1.location, info1.sequence);
@@ -3831,15 +3872,9 @@ int DuelClient::ClientAnalyze(const uint8_t* msg, uint32_t len) {
 	case MSG_ANNOUNCE_RACE: {
 		/*const auto player = */mainGame->LocalPlayer(BufferIO::Read<uint8_t>(pbuf));
 		mainGame->dField.announce_count = BufferIO::Read<uint8_t>(pbuf);
-		const auto available = BufferIO::Read<uint64_t>(pbuf);
-		uint64_t filter = 0x1;
-		for(int i = 0; i < 25; ++i, filter <<= 1) {
-			mainGame->chkRace[i]->setChecked(false);
-			if(filter & available)
-				mainGame->chkRace[i]->setVisible(true);
-			else mainGame->chkRace[i]->setVisible(false);
-		}
+		const auto available = CompatRead<uint32_t, uint64_t>(pbuf);
 		std::unique_lock<epro::mutex> lock(mainGame->gMutex);
+		mainGame->dField.ShowSelectRace(available);
 		mainGame->wANRace->setText(gDataManager->GetDesc(select_hint ? select_hint : 563, mainGame->dInfo.compat_mode).data());
 		mainGame->PopupElement(mainGame->wANRace);
 		select_hint = 0;
@@ -3849,11 +3884,10 @@ int DuelClient::ClientAnalyze(const uint8_t* msg, uint32_t len) {
 		/*const auto player = */mainGame->LocalPlayer(BufferIO::Read<uint8_t>(pbuf));
 		mainGame->dField.announce_count = BufferIO::Read<uint8_t>(pbuf);
 		const auto available = BufferIO::Read<uint32_t>(pbuf);
-		for(int i = 0, filter = 0x1; i < 7; ++i, filter <<= 1) {
+		uint32_t filter = 0x1;
+		for(auto i = 0u; i < sizeofarr(mainGame->chkAttribute); ++i, filter <<= 1) {
 			mainGame->chkAttribute[i]->setChecked(false);
-			if(filter & available)
-				mainGame->chkAttribute[i]->setVisible(true);
-			else mainGame->chkAttribute[i]->setVisible(false);
+			mainGame->chkAttribute[i]->setVisible((filter& available) != 0);
 		}
 		std::unique_lock<epro::mutex> lock(mainGame->gMutex);
 		mainGame->wANAttribute->setText(gDataManager->GetDesc(select_hint ? select_hint : 562, mainGame->dInfo.compat_mode).data());
@@ -3970,7 +4004,7 @@ int DuelClient::ClientAnalyze(const uint8_t* msg, uint32_t len) {
 					pcard->overlayTarget->overlayed.erase(pcard->overlayTarget->overlayed.begin() + pcard->sequence);
 					mainGame->dField.overlay_cards.erase(pcard);
 					for(size_t j = 0; j < pcard->overlayTarget->overlayed.size(); ++j)
-						pcard->overlayTarget->overlayed[j]->sequence = j;
+						pcard->overlayTarget->overlayed[j]->sequence = static_cast<uint32_t>(j);
 					pcard->overlayTarget = 0;
 				} else
 					mainGame->dField.RemoveCard(pcard->controler, pcard->location, pcard->sequence);
@@ -3996,7 +4030,7 @@ int DuelClient::ClientAnalyze(const uint8_t* msg, uint32_t len) {
 					ClientCard* ccard = new ClientCard{};
 					ccard->controler = player;
 					ccard->location = location;
-					ccard->sequence = pile.size();
+					ccard->sequence = static_cast<uint32_t>(pile.size());
 					ccard->position = POS_FACEDOWN;
 					pile.push_back(ccard);
 				}
@@ -4061,99 +4095,85 @@ int DuelClient::ClientAnalyze(const uint8_t* msg, uint32_t len) {
 		auto lock = LockIf();
 		mainGame->dField.Clear();
 		if(mainGame->dInfo.compat_mode) {
-			uint8_t field = BufferIO::Read<uint8_t>(pbuf);
-			mainGame->dInfo.duel_field = field & 0xf;
-			mainGame->dInfo.duel_params = 0;
+			uint8_t field = BufferIO::Read<uint8_t>(pbuf) & 0xf;
+			mainGame->dInfo.duel_field = field;
+			switch(field) {
+				case 1: mainGame->dInfo.duel_params = DUEL_MODE_MR1; break;
+				case 2: mainGame->dInfo.duel_params = DUEL_MODE_MR2; break;
+				case 3: mainGame->dInfo.duel_params = DUEL_MODE_MR3; break;
+				case 4: mainGame->dInfo.duel_params = DUEL_MODE_MR4; break;
+				default:
+				case 5: mainGame->dInfo.duel_params = DUEL_MODE_MR5; break;
+			}
 		} else {
 			uint32_t opts = BufferIO::Read<uint32_t>(pbuf);
 			mainGame->dInfo.duel_field = mainGame->GetMasterRule(opts);
 			mainGame->dInfo.duel_params = opts;
 		}
-		matManager.SetActiveVertices((mainGame->dInfo.duel_params& DUEL_3_COLUMNS_FIELD) ? 1 : 0,
-									 (mainGame->dInfo.duel_field == 3 || mainGame->dInfo.duel_field == 5) ? 0 : 1);
+		matManager.SetActiveVertices(mainGame->dInfo.HasFieldFlag(DUEL_3_COLUMNS_FIELD),
+									 !mainGame->dInfo.HasFieldFlag(DUEL_SEPARATE_PZONE));
 		mainGame->SetPhaseButtons();
-		uint32_t val = 0;
 		for(int i = 0; i < 2; ++i) {
 			int p = mainGame->LocalPlayer(i);
 			mainGame->dInfo.lp[p] = BufferIO::Read<uint32_t>(pbuf);
 			mainGame->dInfo.strLP[p] = fmt::to_wstring(mainGame->dInfo.lp[p]);
 			for(int seq = 0; seq < 7; ++seq) {
-				val = BufferIO::Read<uint8_t>(pbuf);
-				if(val) {
-					ClientCard* ccard = new ClientCard{};
-					mainGame->dField.AddCard(ccard, p, LOCATION_MZONE, seq);
-					ccard->position = BufferIO::Read<uint8_t>(pbuf);
-					val = CompatRead<uint8_t, uint32_t>(pbuf);
-					if(val) {
-						for(uint32_t xyz = 0; xyz < val; ++xyz) {
-							ClientCard* xcard = new ClientCard{};
-							ccard->overlayed.push_back(xcard);
-							mainGame->dField.overlay_cards.insert(xcard);
-							xcard->overlayTarget = ccard;
-							xcard->location = LOCATION_OVERLAY;
-							xcard->sequence = ccard->overlayed.size() - 1;
-							xcard->owner = p;
-							xcard->controler = p;
-						}
-					}
+				const auto is_zone_used = !!BufferIO::Read<uint8_t>(pbuf);
+				if(!is_zone_used)
+					continue;
+				ClientCard* ccard = new ClientCard{};
+				mainGame->dField.AddCard(ccard, p, LOCATION_MZONE, seq);
+				ccard->position = BufferIO::Read<uint8_t>(pbuf);
+				const auto xyz_mat_count = CompatRead<uint8_t, uint32_t>(pbuf);
+				for(uint32_t xyz = 0; xyz < xyz_mat_count; ++xyz) {
+					ClientCard* xcard = new ClientCard{};
+					ccard->overlayed.push_back(xcard);
+					mainGame->dField.overlay_cards.insert(xcard);
+					xcard->overlayTarget = ccard;
+					xcard->location = LOCATION_OVERLAY;
+					xcard->sequence = static_cast<uint32_t>(ccard->overlayed.size() - 1);
+					xcard->owner = p;
+					xcard->controler = p;
 				}
 			}
 			for(int seq = 0; seq < 8; ++seq) {
-				val = BufferIO::Read<uint8_t>(pbuf);
-				if(val) {
-					ClientCard* ccard = new ClientCard{};
-					mainGame->dField.AddCard(ccard, p, LOCATION_SZONE, seq);
-					ccard->position = BufferIO::Read<uint8_t>(pbuf);
-					if(!mainGame->dInfo.compat_mode) {
-						val = BufferIO::Read<uint32_t>(pbuf);
-						if(val) {
-							for(uint32_t xyz = 0; xyz < val; ++xyz) {
-								ClientCard* xcard = new ClientCard{};
-								ccard->overlayed.push_back(xcard);
-								mainGame->dField.overlay_cards.insert(xcard);
-								xcard->overlayTarget = ccard;
-								xcard->location = LOCATION_OVERLAY;
-								xcard->sequence = ccard->overlayed.size() - 1;
-								xcard->owner = p;
-								xcard->controler = p;
-							}
-						}
-					}
+				const auto is_zone_used = !!BufferIO::Read<uint8_t>(pbuf);
+				if(!is_zone_used)
+					continue;
+				ClientCard* ccard = new ClientCard{};
+				mainGame->dField.AddCard(ccard, p, LOCATION_SZONE, seq);
+				ccard->position = BufferIO::Read<uint8_t>(pbuf);
+				if(mainGame->dInfo.compat_mode)
+					continue;
+				const auto xyz_mat_count = BufferIO::Read<uint32_t>(pbuf);
+				for(uint32_t xyz = 0; xyz < xyz_mat_count; ++xyz) {
+					ClientCard* xcard = new ClientCard{};
+					ccard->overlayed.push_back(xcard);
+					mainGame->dField.overlay_cards.insert(xcard);
+					xcard->overlayTarget = ccard;
+					xcard->location = LOCATION_OVERLAY;
+					xcard->sequence = static_cast<uint32_t>(ccard->overlayed.size() - 1);
+					xcard->owner = p;
+					xcard->controler = p;
 				}
 			}
-			val = CompatRead<uint8_t, uint32_t>(pbuf);
-			for(uint32_t seq = 0; seq < val; ++seq) {
-				ClientCard* ccard = new ClientCard{};
-				mainGame->dField.AddCard(ccard, p, LOCATION_DECK, seq);
-			}
-			val = CompatRead<uint8_t, uint32_t>(pbuf);
-			for(uint32_t seq = 0; seq < val; ++seq) {
-				ClientCard* ccard = new ClientCard{};
-				mainGame->dField.AddCard(ccard, p, LOCATION_HAND, seq);
-			}
-			val = CompatRead<uint8_t, uint32_t>(pbuf);
-			for(uint32_t seq = 0; seq < val; ++seq) {
-				ClientCard* ccard = new ClientCard{};
-				mainGame->dField.AddCard(ccard, p, LOCATION_GRAVE, seq);
-			}
-			val = CompatRead<uint8_t, uint32_t>(pbuf);
-			for(uint32_t seq = 0; seq < val; ++seq) {
-				ClientCard* ccard = new ClientCard{};
-				mainGame->dField.AddCard(ccard, p, LOCATION_REMOVED, seq);
-			}
-			val = CompatRead<uint8_t, uint32_t>(pbuf);
-			for(uint32_t seq = 0; seq < val; ++seq) {
-				ClientCard* ccard = new ClientCard{};
-				mainGame->dField.AddCard(ccard, p, LOCATION_EXTRA, seq);
-			}
-			val = CompatRead<uint8_t, uint32_t>(pbuf);
-			mainGame->dField.extra_p_count[p] = val;
+			auto push_range = [&pbuf,p](uint8_t location) {
+				const auto val = CompatRead<uint8_t, uint32_t>(pbuf);
+				for(uint32_t seq = 0; seq < val; ++seq)
+					mainGame->dField.AddCard(new ClientCard{}, p, location, seq);
+			};
+			push_range(LOCATION_DECK);
+			push_range(LOCATION_HAND);
+			push_range(LOCATION_GRAVE);
+			push_range(LOCATION_REMOVED);
+			push_range(LOCATION_EXTRA);
+			mainGame->dField.extra_p_count[p] = CompatRead<uint8_t, uint32_t>(pbuf);
 		}
 		mainGame->dInfo.startlp = std::max(mainGame->dInfo.lp[0], mainGame->dInfo.lp[1]);
 		mainGame->dField.RefreshAllCards();
-		val = CompatRead<uint8_t, uint32_t>(pbuf); //number of chains
-		if(val > 0) {
-			for(uint32_t i = 0; i < val; ++i) {
+		const auto solving_chains = CompatRead<uint8_t, uint32_t>(pbuf);
+		if(solving_chains > 0) {
+			for(uint32_t i = 0; i < solving_chains; ++i) {
 				uint32_t code = BufferIO::Read<uint32_t>(pbuf);
 				CoreUtils::loc_info info = CoreUtils::ReadLocInfo(pbuf, mainGame->dInfo.compat_mode);
 				info.controler = mainGame->LocalPlayer(info.controler);
@@ -4242,6 +4262,7 @@ void DuelClient::SendResponse() {
 		if(msg != MSG_SELECT_CARD && msg != MSG_SELECT_UNSELECT_CARD)
 			break;
 	}
+	/*fallthrough*/
 	case MSG_SELECT_TRIBUTE:
 	case MSG_SELECT_COUNTER: {
 		mainGame->dField.ClearSelect();
@@ -4272,41 +4293,53 @@ void DuelClient::SendResponse() {
 	}
 }
 
-static bool getAddresses(std::array<uint32_t, 8>& addresses) {
-#ifdef __ANDROID__
-	return (addresses[0] = porting::getLocalIP()) != -1;
-#elif defined(_WIN32)
+static std::vector<epro::Address> getAddresses() {
+#if EDOPRO_ANDROID
+	return porting::getLocalIP();
+#else
+	std::vector<epro::Address> addresses;
+#if EDOPRO_WINDOWS
 	char hname[256];
 	gethostname(hname, 256);
-	hostent* host = gethostbyname(hname);
-	if(!host || host->h_addrtype != AF_INET)
-		return false;
-	auto list = reinterpret_cast<in_addr**>(host->h_addr_list);
-	int i = 0;
-	for(; i < 8 && list[i] != 0; ++i)
-		addresses[i] = list[i]->s_addr;
-	return i != 0;
-#else
+	evutil_addrinfo hints;
+	evutil_addrinfo* res;
+	memset(&hints, 0, sizeof(hints));
+	hints.ai_family = AF_UNSPEC;
+	hints.ai_socktype = SOCK_DGRAM;
+	if(evutil_getaddrinfo(hname, nullptr, &hints, &res) != 0)
+		return {};
+	for(auto* ptr = res; ptr != nullptr && addresses.size() < 8; ptr = ptr->ai_next) {
+		if(ptr->ai_family == AF_INET) {
+			auto addr_in = reinterpret_cast<sockaddr_in*>(ptr->ai_addr);
+			if(addr_in->sin_addr.s_addr != 0)
+				addresses.emplace_back(&addr_in->sin_addr.s_addr, epro::Address::INET);
+		} else if(ptr->ai_family == AF_INET6) {
+			auto addr_in6 = reinterpret_cast<sockaddr_in6*>(ptr->ai_addr);
+			addresses.emplace_back(addr_in6->sin6_addr.s6_addr, epro::Address::INET6);
+		}
+	}
+	evutil_freeaddrinfo(res);
+#elif EDOPRO_LINUX || EDOPRO_APPLE
 	ifaddrs* allInterfaces;
-	// Get list of all interfaces on the local machine:
 	if(getifaddrs(&allInterfaces) != 0)
-		return false;
-	int i = 0;
-	// For each interface ...
-	for(ifaddrs* interface = allInterfaces; interface != nullptr && i < 8; interface = interface->ifa_next) {
-		unsigned int flags = interface->ifa_flags;
+		return {};
+	for(auto* interface = allInterfaces; interface != nullptr && addresses.size() < 8; interface = interface->ifa_next) {
+		auto flags = interface->ifa_flags;
 		sockaddr* addr = interface->ifa_addr;
-		// Check for running IPv4 interfaces.
-		if((flags & (IFF_UP | IFF_RUNNING | IFF_LOOPBACK)) == (IFF_UP | IFF_RUNNING)) {
-			if(addr->sa_family == AF_INET) {
-				auto addr_in = reinterpret_cast<sockaddr_in*>(addr);
-				if(addr_in->sin_addr.s_addr != 0)
-					addresses[i++] = addr_in->sin_addr.s_addr;
-			}
+		if((flags & (IFF_UP | IFF_RUNNING | IFF_LOOPBACK)) != (IFF_UP | IFF_RUNNING))
+			continue;
+		if(addr->sa_family == AF_INET) {
+			auto addr_in = reinterpret_cast<sockaddr_in*>(addr);
+			if(addr_in->sin_addr.s_addr != 0)
+				addresses.emplace_back(&addr_in->sin_addr.s_addr, epro::Address::INET);
+		} else if(addr->sa_family == AF_INET6) {
+			auto addr_in6 = reinterpret_cast<sockaddr_in6*>(addr);
+			addresses.emplace_back(addr_in6->sin6_addr.s6_addr, epro::Address::INET6);
 		}
 	}
 	freeifaddrs(allInterfaces);
-	return i != 0;
+#endif
+	return addresses;
 #endif
 }
 
@@ -4316,10 +4349,9 @@ void DuelClient::BeginRefreshHost() {
 	is_refreshing = true;
 	mainGame->btnLanRefresh->setEnabled(false);
 	mainGame->lstHostList->clear();
-	remotes.clear();
 	hosts.clear();
-	std::array<uint32_t, 8> addresses{};
-	if(!getAddresses(addresses)) {
+	const auto addresses = getAddresses();
+	if(addresses.empty()) {
 		mainGame->btnLanRefresh->setEnabled(true);
 		is_refreshing = false;
 		return;
@@ -4327,54 +4359,113 @@ void DuelClient::BeginRefreshHost() {
 	event_base* broadev = event_base_new();
 	if(!broadev)
 		return;
-	evutil_socket_t reply = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
-	if(reply == EVUTIL_INVALID_SOCKET) {
-		event_base_free(broadev);
-		return;
-	}
-	sockaddr_in reply_addr;
-	memset(&reply_addr, 0, sizeof(reply_addr));
-	reply_addr.sin_family = AF_INET;
-	reply_addr.sin_port = htons(7921);
-	reply_addr.sin_addr.s_addr = 0;
-	if(bind(reply, reinterpret_cast<sockaddr*>(&reply_addr), sizeof(reply_addr)) == -1) {
-		evutil_closesocket(reply);
+
+	bool hasIpv6 = false;
+
+	auto createAndBindIpv6Socket = [&hasIpv6]() -> evutil_socket_t {
+		evutil_socket_t reply = socket(AF_INET6, SOCK_DGRAM, IPPROTO_UDP);
+		if(reply == EVUTIL_INVALID_SOCKET)
+			return EVUTIL_INVALID_SOCKET;
+		int off = 0;
+		if(setsockopt(reply, IPPROTO_IPV6, IPV6_V6ONLY, (char*)&off, (ev_socklen_t)sizeof(off)) != 0) {
+			evutil_closesocket(reply);
+			return EVUTIL_INVALID_SOCKET;
+		}
+		sockaddr_in6 reply_addr_v6;
+		memset(&reply_addr_v6, 0, sizeof(reply_addr_v6));
+		reply_addr_v6.sin6_family = AF_INET6;
+		reply_addr_v6.sin6_port = htons(7921);
+		evutil_inet_pton(AF_INET6, "::", &reply_addr_v6.sin6_addr);
+		if(bind(reply, reinterpret_cast<sockaddr*>(&reply_addr_v6), sizeof(reply_addr_v6)) == -1) {
+			evutil_closesocket(reply);
+			return EVUTIL_INVALID_SOCKET;
+		}
+		hasIpv6 = true;
+		return reply;
+	};
+
+	auto createAndBindIpv4Socket = []() -> evutil_socket_t {
+		evutil_socket_t reply = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
+		if(reply == EVUTIL_INVALID_SOCKET)
+			return EVUTIL_INVALID_SOCKET;
+		sockaddr_in reply_addr;
+		memset(&reply_addr, 0, sizeof(reply_addr));
+		reply_addr.sin_family = AF_INET;
+		reply_addr.sin_port = htons(7921);
+		reply_addr.sin_addr.s_addr = htonl(INADDR_ANY);
+		if(bind(reply, reinterpret_cast<sockaddr*>(&reply_addr), sizeof(reply_addr)) == -1) {
+			evutil_closesocket(reply);
+			return EVUTIL_INVALID_SOCKET;
+		}
+		return reply;
+	};
+
+	evutil_socket_t reply = createAndBindIpv6Socket();
+	if(reply == EVUTIL_INVALID_SOCKET && (reply = createAndBindIpv4Socket()) == EVUTIL_INVALID_SOCKET) {
 		event_base_free(broadev);
 		mainGame->btnLanRefresh->setEnabled(true);
 		is_refreshing = false;
 		return;
 	}
+
 	timeval timeout = { 3, 0 };
 	resp_event = event_new(broadev, reply, EV_TIMEOUT | EV_READ | EV_PERSIST, BroadcastReply, broadev);
 	event_add(resp_event, &timeout);
 	epro::thread(RefreshThread, broadev).detach();
+
 	//send request
-	sockaddr_in local;
-	local.sin_family = AF_INET;
-	local.sin_port = htons(7922);
-	sockaddr_in sockTo;
-	sockTo.sin_addr.s_addr = htonl(INADDR_BROADCAST);
-	sockTo.sin_family = AF_INET;
-	sockTo.sin_port = htons(7920);
+	sockaddr_in localv4;
+	memset(&localv4, 0, sizeof(localv4));
+	localv4.sin_family = AF_INET;
+	sockaddr_in6 localv6;
+	memset(&localv6, 0, sizeof(localv6));
+	localv6.sin6_family = AF_INET6;
+
+	sockaddr_in sockTov4;
+	memset(&sockTov4, 0, sizeof(sockTov4));
+	sockTov4.sin_addr.s_addr = htonl(INADDR_BROADCAST);
+	sockTov4.sin_family = AF_INET;
+	sockTov4.sin_port = htons(7920);
+	sockaddr_in6 sockTov6;
+	memset(&sockTov6, 0, sizeof(sockTov6));
+	//multicast address
+	evutil_inet_pton(AF_INET6, "FF02::1", &sockTov6.sin6_addr);
+	sockTov6.sin6_family = AF_INET6;
+	sockTov6.sin6_port = htons(7920);
+
 	HostRequest hReq;
 	hReq.identifier = NETWORK_CLIENT_ID;
 	for(const auto& address : addresses) {
-		if(address == 0)
-			break;
-		local.sin_addr.s_addr = address;
-		evutil_socket_t sSend = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
-		if(sSend == EVUTIL_INVALID_SOCKET)
-			continue;
-		ev_socklen_t opt = true;
-		setsockopt(sSend, SOL_SOCKET, SO_BROADCAST, (const char*)&opt,
-				   sizeof(ev_socklen_t));
-		if(bind(sSend, reinterpret_cast<sockaddr*>(&local), sizeof(local)) == -1) {
+		if(address.family == epro::Address::INET6) {
+			if(!hasIpv6)
+				continue;
+			address.toIn6Addr(localv6.sin6_addr);
+			evutil_socket_t sSend = socket(AF_INET6, SOCK_DGRAM, IPPROTO_UDP);
+			if(sSend == EVUTIL_INVALID_SOCKET)
+				continue;
+			if(bind(sSend, reinterpret_cast<sockaddr*>(&localv6), sizeof(localv6)) == -1) {
+				evutil_closesocket(sSend);
+				continue;
+			}
+			sendto(sSend, reinterpret_cast<const char*>(&hReq), sizeof(HostRequest), 0,
+				   reinterpret_cast<sockaddr*>(&sockTov6), sizeof(sockTov6));
 			evutil_closesocket(sSend);
-			continue;
+		} else {
+			address.toInAddr(localv4.sin_addr);
+			evutil_socket_t sSend = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
+			if(sSend == EVUTIL_INVALID_SOCKET)
+				continue;
+			int on = 1;
+			setsockopt(sSend, SOL_SOCKET, SO_BROADCAST, (const char*)&on,
+					   (ev_socklen_t)sizeof(on));
+			if(bind(sSend, reinterpret_cast<sockaddr*>(&localv4), sizeof(localv4)) == -1) {
+				evutil_closesocket(sSend);
+				continue;
+			}
+			sendto(sSend, reinterpret_cast<const char*>(&hReq), sizeof(HostRequest), 0,
+				   reinterpret_cast<sockaddr*>(&sockTov4), sizeof(sockTov4));
+			evutil_closesocket(sSend);
 		}
-		sendto(sSend, reinterpret_cast<const char*>(&hReq), sizeof(HostRequest), 0,
-			   reinterpret_cast<sockaddr*>(&sockTo), sizeof(sockTo));
-		evutil_closesocket(sSend);
 	}
 }
 int DuelClient::RefreshThread(event_base* broadev) {
@@ -4395,21 +4486,41 @@ void DuelClient::BroadcastReply(evutil_socket_t fd, short events, void* arg) {
 		if(!is_closing)
 			mainGame->btnLanRefresh->setEnabled(true);
 	} else if(events & EV_READ) {
-		sockaddr_in bc_addr;
-		ev_socklen_t sz = sizeof(sockaddr_in);
+		sockaddr_storage bc_addr;
+		ev_socklen_t sz = sizeof(sockaddr_storage);
 		HostPacket packet{};
-		int ret = recvfrom(fd, reinterpret_cast<char*>(&packet), sizeof(HostPacket), 0, (sockaddr*)&bc_addr, &sz);
-		uint32_t ipaddr = bc_addr.sin_addr.s_addr;
+		int ret = recvfrom(fd, reinterpret_cast<char*>(&packet), sizeof(packet), 0, (sockaddr*)&bc_addr, &sz);
+		if(ret < static_cast<int>(sizeof(HostPacket)))
+			return;
+		epro::Address ipaddr;
+		if(bc_addr.ss_family == AF_INET) {
+			ipaddr = epro::Address{ &reinterpret_cast<sockaddr_in&>(bc_addr).sin_addr.s_addr, epro::Address::INET };
+		} else if(bc_addr.ss_family == AF_INET6) {
+			auto IsV6AddressV4Mapped = [](const in6_addr& addr) {
+				static constexpr in6_addr ipv6Mapped = {
+					{
+						0x00, 0x00, 0x00, 0x00,
+						0x00, 0x00, 0x00, 0x00,
+						0x00, 0x00, 0xFF, 0xFF,
+					}
+				};
+				return memcmp(ipv6Mapped.s6_addr, addr.s6_addr, 12) == 0;
+			};
+			const auto& v6addr = reinterpret_cast<sockaddr_in6&>(bc_addr).sin6_addr;
+			if(IsV6AddressV4Mapped(v6addr))
+				ipaddr = epro::Address{ v6addr.s6_addr + 12, epro::Address::INET };
+			else
+				ipaddr = epro::Address{ v6addr.s6_addr, epro::Address::INET6 };
+		} else
+			return;
 		if(is_closing)
 			return;
 		if(packet.identifier != NETWORK_SERVER_ID)
 			return;
-		const auto remote = std::make_pair(ipaddr, packet.port);
-		if(remotes.find(remote) == remotes.end()) {
+		const auto remote = epro::Host{ ipaddr, packet.port };
+		if(std::find(hosts.begin(), hosts.end(), remote) == hosts.end()) {
 			std::lock_guard<epro::mutex> lock(mainGame->gMutex);
-			remotes.insert(remote);
-			packet.ipaddr = ipaddr;
-			hosts.push_back(packet);
+			hosts.push_back(remote);
 			const auto is_compact_mode = packet.host.handshake != SERVER_HANDSHAKE;
 			int rule = packet.host.duel_rule;
 			auto GetRuleString = [&]()-> std::wstring {
@@ -4465,11 +4576,11 @@ void DuelClient::ReplayPrompt(bool local_stream) {
 			replay_header.base.flag &= ~REPLAY_LUA64;
 		last_replay.BeginRecord(false);
 		last_replay.WriteHeader(replay_header);
-		last_replay.Write<uint32_t>(mainGame->dInfo.selfnames.size(), false);
+		last_replay.Write<uint32_t>(static_cast<uint32_t>(mainGame->dInfo.selfnames.size()), false);
 		for(auto& name : mainGame->dInfo.selfnames) {
 			last_replay.WriteData(name.data(), 40, false);
 		}
-		last_replay.Write<uint32_t>(mainGame->dInfo.opponames.size(), false);
+		last_replay.Write<uint32_t>(static_cast<uint32_t>(mainGame->dInfo.opponames.size()), false);
 		for(auto& name : mainGame->dInfo.opponames) {
 			last_replay.WriteData(name.data(), 40, false);
 		}
@@ -4487,7 +4598,7 @@ void DuelClient::ReplayPrompt(bool local_stream) {
 	mainGame->btnChainWhenAvail->setVisible(false);
 	mainGame->btnCancelOrFinish->setVisible(false);
 	auto now = std::time(nullptr);
-	mainGame->PopupSaveWindow(gDataManager->GetSysString(1340), epro::format(L"{:%Y-%m-%d %H-%M-%S}", *std::localtime(&now)), gDataManager->GetSysString(1342));
+	mainGame->PopupSaveWindow(gDataManager->GetSysString(1340), epro::format(L"{:%Y-%m-%d %H-%M-%S}", fmt::localtime(now)), gDataManager->GetSysString(1342));
 	mainGame->replaySignal.Wait(lock);
 	if(mainGame->saveReplay || !is_local_host) {
 		if(mainGame->saveReplay)

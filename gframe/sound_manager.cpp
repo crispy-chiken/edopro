@@ -16,23 +16,23 @@
 namespace ygo {
 SoundManager::SoundManager(double sounds_volume, double music_volume, bool sounds_enabled, bool music_enabled) {
 #ifdef BACKEND
-	fmt::print("Using: " STR(BACKEND)" for audio playback.\n");
+	epro::print("Using: " STR(BACKEND)" for audio playback.\n");
 	working_dir = Utils::ToUTF8IfNeeded(Utils::GetWorkingDirectory());
 	soundsEnabled = sounds_enabled;
 	musicEnabled = music_enabled;
 	try {
-		mixer = std::unique_ptr<SoundBackend>(new BACKEND());
+		mixer = std::make_unique<BACKEND>();
 		mixer->SetMusicVolume(music_volume);
 		mixer->SetSoundVolume(sounds_volume);
 	}
 	catch(const std::runtime_error& e) {
-		fmt::print("Failed to initialize audio backend:\n");
-		fmt::print(e.what());
+		epro::print("Failed to initialize audio backend:\n");
+		epro::print(e.what());
 		succesfully_initied = soundsEnabled = musicEnabled = false;
 		return;
 	}
 	catch(...) {
-		fmt::print("Failed to initialize audio backend.\n");
+		epro::print("Failed to initialize audio backend.\n");
 		succesfully_initied = soundsEnabled = musicEnabled = false;
 		return;
 	}
@@ -43,7 +43,7 @@ SoundManager::SoundManager(double sounds_volume, double music_volume, bool sound
 	RefreshChantsList();
 	succesfully_initied = true;
 #else
-	fmt::print("No audio backend available.\nAudio will be disabled.\n");
+	epro::print("No audio backend available.\nAudio will be disabled.\n");
 	succesfully_initied = soundsEnabled = musicEnabled = false;
 	return;
 #endif // BACKEND
@@ -162,7 +162,7 @@ void SoundManager::PlayBGM(BGM scene, bool loop) {
 	if(!musicEnabled)
 		return;
 	const auto& list = BGMList[scene];
-	int count = list.size();
+	auto count = static_cast<int>(list.size());
 	if(count == 0)
 		return;
 	if(scene != bgm_scene || !mixer->MusicPlaying()) {
@@ -180,8 +180,7 @@ bool SoundManager::PlayChant(CHANT chant, uint32_t code) {
 	auto chant_it = ChantsList.find(key);
 	if(chant_it == ChantsList.end())
 		return false;
-	mixer->PlaySound(chant_it->second);
-	return true;
+	return mixer->PlaySound(chant_it->second);
 #else
 	return false;
 #endif

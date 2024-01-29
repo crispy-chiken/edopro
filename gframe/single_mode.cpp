@@ -50,12 +50,12 @@ void SingleMode::Restart() {
 	StopPlay();
 	is_restarting = true;
 }
-void SingleMode::SetResponse(void* resp, uint32_t len) {
+void SingleMode::SetResponse(void* resp, size_t len) {
 	if(!pduel)
 		return;
-	last_replay.Write<uint8_t>(len, false);
+	last_replay.Write<uint8_t>(static_cast<uint8_t>(len), false);
 	last_replay.WriteData(resp, len);
-	OCG_DuelSetResponse(pduel, resp, len);
+	OCG_DuelSetResponse(pduel, resp, static_cast<uint32_t>(len));
 }
 int SingleMode::SinglePlayThread(DuelOptions&& duelOptions) {
 	Utils::SetThreadName("SinglePlay");
@@ -92,8 +92,8 @@ restart:
 	pduel = mainGame->SetupDuel({ { seed[0], seed[1], seed[2], seed[3] }, opt, team, team });
 	mainGame->dInfo.duel_params = opt;
 	mainGame->dInfo.duel_field = mainGame->GetMasterRule(mainGame->dInfo.duel_params);
-	matManager.SetActiveVertices((mainGame->dInfo.duel_params & DUEL_3_COLUMNS_FIELD) ? 1 : 0,
-								 (mainGame->dInfo.duel_field == 3 || mainGame->dInfo.duel_field == 5) ? 0 : 1);
+	matManager.SetActiveVertices(mainGame->dInfo.HasFieldFlag(DUEL_3_COLUMNS_FIELD),
+								 !mainGame->dInfo.HasFieldFlag(DUEL_SEPARATE_PZONE));
 	mainGame->dInfo.compat_mode = false;
 	mainGame->dInfo.legacy_race_size = false;
 	mainGame->dInfo.startlp = mainGame->dInfo.lp[0] = mainGame->dInfo.lp[1] = duelOptions.startingLP;
@@ -127,14 +127,14 @@ restart:
 		auto LoadDeck = [&](uint8_t team) {
 			OCG_NewCardInfo card_info = { team, 0, 0, team, 0, 0, POS_FACEDOWN_DEFENSE };
 			card_info.loc = LOCATION_DECK;
-			last_replay.Write<uint32_t>(playerdeck.main.size(), false);
+			last_replay.Write<uint32_t>(static_cast<uint32_t>(playerdeck.main.size()), false);
 			for (int32_t i = (int32_t)playerdeck.main.size() - 1; i >= 0; --i) {
 				card_info.code = playerdeck.main[i]->code;
 				OCG_DuelNewCard(pduel, card_info);
 				last_replay.Write<uint32_t>(playerdeck.main[i]->code, false);
 			}
 			card_info.loc = LOCATION_EXTRA;
-			last_replay.Write<uint32_t>(playerdeck.extra.size(), false);
+			last_replay.Write<uint32_t>(static_cast<uint32_t>(playerdeck.extra.size()), false);
 			for (int32_t i = (int32_t)playerdeck.extra.size() - 1; i >= 0; --i) {
 				card_info.code = playerdeck.extra[i]->code;
 				OCG_DuelNewCard(pduel, card_info);
@@ -268,7 +268,7 @@ restart:
 	if(saveReplay && !was_restarting) {
 		auto now = std::time(nullptr);
 		std::unique_lock<epro::mutex> lock(mainGame->gMutex);
-		mainGame->PopupSaveWindow(gDataManager->GetSysString(1340), epro::format(L"{:%Y-%m-%d %H-%M-%S}", *std::localtime(&now)), gDataManager->GetSysString(1342));
+		mainGame->PopupSaveWindow(gDataManager->GetSysString(1340), epro::format(L"{:%Y-%m-%d %H-%M-%S}", fmt::localtime(now)), gDataManager->GetSysString(1342));
 		mainGame->replaySignal.Wait(lock);
 		if(mainGame->saveReplay)
 			new_replay.SaveReplay(Utils::ToPathString(mainGame->ebFileSaveName->getText()));
@@ -338,7 +338,6 @@ bool SingleMode::SinglePlayAnalyze(CoreUtils::Packet& packet) {
 		DuelClient::answered = false;
 		return DuelClient::ClientAnalyze(packet);
 	};
-	int player;
 	replay_stream.clear();
 	if(is_closing || !is_continuing)
 		return false;
@@ -356,7 +355,7 @@ bool SingleMode::SinglePlayAnalyze(CoreUtils::Packet& packet) {
 		case MSG_HINT: {
 			const auto* pbuf = packet.data();
 			int type = BufferIO::Read<uint8_t>(pbuf);
-			int player = BufferIO::Read<uint8_t>(pbuf);
+			auto player = BufferIO::Read<uint8_t>(pbuf);
 			/*uint64_t data = BufferIO::Read<uint64_t>(pbuf);*/
 			bool analyze = false;
 			switch (type) {
@@ -396,7 +395,7 @@ bool SingleMode::SinglePlayAnalyze(CoreUtils::Packet& packet) {
 		case MSG_SHOW_HINT: {
 			auto* pbuf = packet.data();
 			auto len = BufferIO::Read<uint16_t>(pbuf);
-			if((len + 1) != packet.buff_size() - (sizeof(uint16_t)))
+			if((len + 1u) != packet.buff_size() - (sizeof(uint16_t)))
 				break;
 			pbuf[len] = 0;
 			if(packet.message == MSG_AI_NAME) {
@@ -456,12 +455,12 @@ bool SingleMode::SinglePlayAnalyze(CoreUtils::Packet& packet) {
 	auto* pbuf = packet.data();
 	switch(mainGame->dInfo.curMsg) {
 		case MSG_SHUFFLE_DECK: {
-			player = BufferIO::Read<uint8_t>(pbuf);
+			auto player = BufferIO::Read<uint8_t>(pbuf);
 			SinglePlayRefresh(player, LOCATION_DECK, 0x2181fff);
 			break;
 		}
 		case MSG_SWAP_GRAVE_DECK: {
-			player = BufferIO::Read<uint8_t>(pbuf);
+			auto player = BufferIO::Read<uint8_t>(pbuf);
 			SinglePlayRefresh(player, LOCATION_GRAVE, 0x2181fff);
 			break;
 		}
@@ -479,7 +478,7 @@ bool SingleMode::SinglePlayAnalyze(CoreUtils::Packet& packet) {
 			break;
 		}
 		case MSG_TAG_SWAP: {
-			player = BufferIO::Read<uint8_t>(pbuf);
+			auto player = BufferIO::Read<uint8_t>(pbuf);
 			SinglePlayRefresh(player, LOCATION_DECK, 0x181fff);
 			SinglePlayRefresh(player, LOCATION_EXTRA, 0x181fff);
 			break;

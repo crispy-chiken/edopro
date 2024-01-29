@@ -1,11 +1,11 @@
 #ifndef GAME_CONFIG_H
 #define GAME_CONFIG_H
 
+#include <list>
 #include <nlohmann/json.hpp>
 #include <EDriverTypes.h>
 #include "config.h"
 #include "text_types.h"
-#include "config.h"
 
 namespace ygo {
 
@@ -24,9 +24,10 @@ struct GameConfig
 		epro::path_string font;
 		uint8_t size;
 	};
+	using FallbackFonts = std::list<TextFont>;
 	struct MaxFPSConfig {};
 	struct MusicConfig {};
-	struct BoolAsInt {};
+	struct BoolMaybeUndefined {};
 	GameConfig();
 	bool Load(const epro::path_stringview filename);
 	bool Save(const epro::path_stringview filename);

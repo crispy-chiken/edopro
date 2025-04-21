@@ -1,7 +1,6 @@
-#include <fmt/chrono.h>
+#include "config.h"
 #include "client_updater.h"
 #include "game_config.h"
-#include "config.h"
 #include "menu_handler.h"
 #include "netserver.h"
 #include "duelclient.h"
@@ -27,6 +26,7 @@
 #include <IGUITable.h>
 #include <IGUIWindow.h>
 #include "address.h"
+#include "fmt.h"
 
 namespace ygo {
 
@@ -89,17 +89,6 @@ static void LoadReplay() {
 		start_turn = 0;
 	ReplayMode::StartReplay(start_turn, (mainGame->chkYrp->isChecked() || replay.IsOldReplayMode()));
 }
-static inline void TriggerEvent(irr::gui::IGUIElement* target, irr::gui::EGUI_EVENT_TYPE type) {
-	irr::SEvent event;
-	event.EventType = irr::EET_GUI_EVENT;
-	event.GUIEvent.EventType = type;
-	event.GUIEvent.Caller = target;
-	ygo::mainGame->device->postEventFromUser(event);
-}
-
-static inline void ClickButton(irr::gui::IGUIElement* btn) {
-	TriggerEvent(btn, irr::gui::EGET_BUTTON_CLICKED);
-}
 bool MenuHandler::OnEvent(const irr::SEvent& event) {
 	bool stopPropagation = false;
 	if(mainGame->dField.OnCommonEvent(event, stopPropagation))
@@ -113,6 +102,7 @@ bool MenuHandler::OnEvent(const irr::SEvent& event) {
 		if(mainGame->wMessage->isVisible() && id != BUTTON_MSG_OK &&
 		   prev_operation != ACTION_UPDATE_PROMPT
 		   && prev_operation != ACTION_SHOW_CHANGELOG
+		   && prev_operation != ACTION_ACKNOWLEDGE_HOST
 #if EDOPRO_LINUX && (IRRLICHT_VERSION_MAJOR==1 && IRRLICHT_VERSION_MINOR==9)
 		   && prev_operation != ACTION_TRY_WAYLAND
 #endif
@@ -341,7 +331,8 @@ bool MenuHandler::OnEvent(const irr::SEvent& event) {
 				const auto selected = mainGame->cbDeckSelect->getSelected();
 				if(selected == -1)
 					break;
-				if(!mainGame->deckBuilder.SetCurrentDeckFromFile(Utils::ToPathString(mainGame->cbDeckSelect->getItem(selected))))
+				if(!mainGame->deckBuilder.SetCurrentDeckFromFile(Utils::ToPathString(mainGame->cbDeckSelect->getItem(selected)), false,
+																 mainGame->dInfo.HasFieldFlag(DUEL_EXTRA_DECK_RITUAL) ? RITUAL_LOCATION::EXTRA : RITUAL_LOCATION::MAIN))
 					break;
 				UpdateDeck();
 				DuelClient::SendPacketToServer(CTOS_HS_READY);
@@ -588,6 +579,7 @@ bool MenuHandler::OnEvent(const irr::SEvent& event) {
 					gGameConfig->useWayland = 1;
 					mainGame->SaveConfig();
 					Utils::Reboot();
+					break;
 				}
 #endif
 				case BUTTON_DELETE_REPLAY: {
@@ -685,8 +677,8 @@ bool MenuHandler::OnEvent(const irr::SEvent& event) {
 				if(sel == -1)
 					break;
 				const auto& selection = DuelClient::hosts[sel];
-				mainGame->ebJoinHost->setText(fmt::to_wstring(selection.address).data());
-				mainGame->ebJoinPort->setText(fmt::to_wstring(selection.port).data());
+				mainGame->ebJoinHost->setText(epro::to_wstring(selection.address).data());
+				mainGame->ebJoinPort->setText(epro::to_wstring(selection.port).data());
 				break;
 			}
 			case LISTBOX_REPLAY_LIST: {
@@ -830,7 +822,10 @@ bool MenuHandler::OnEvent(const irr::SEvent& event) {
 				mainGame->env->setFocus(mainGame->wHostPrepare);
 				if(static_cast<irr::gui::IGUICheckBox*>(caller)->isChecked()) {
 					const auto selected = mainGame->cbDeckSelect->getSelected();
-					if(selected == -1 || !mainGame->deckBuilder.SetCurrentDeckFromFile(Utils::ToPathString(mainGame->cbDeckSelect->getItem(selected)))) {
+					if(selected == -1 ||
+					   !mainGame->deckBuilder.SetCurrentDeckFromFile(
+						   Utils::ToPathString(mainGame->cbDeckSelect->getItem(selected)), false,
+						   mainGame->dInfo.HasFieldFlag(DUEL_EXTRA_DECK_RITUAL) ? RITUAL_LOCATION::EXTRA : RITUAL_LOCATION::MAIN)) {
 						static_cast<irr::gui::IGUICheckBox*>(caller)->setChecked(false);
 						break;
 					}
@@ -986,12 +981,12 @@ bool MenuHandler::OnEvent(const irr::SEvent& event) {
 			switch (id) {
 			case COMBOBOX_DUEL_RULE: {
 				auto setDeckSizes = [&](const DeckSizes& size) {
-					mainGame->ebMainMin->setText(fmt::to_wstring<int>(size.main.min).data());
-					mainGame->ebMainMax->setText(fmt::to_wstring<int>(size.main.max).data());
-					mainGame->ebExtraMin->setText(fmt::to_wstring<int>(size.extra.min).data());
-					mainGame->ebExtraMax->setText(fmt::to_wstring<int>(size.extra.max).data());
-					mainGame->ebSideMin->setText(fmt::to_wstring<int>(size.side.min).data());
-					mainGame->ebSideMax->setText(fmt::to_wstring<int>(size.side.max).data());
+					mainGame->ebMainMin->setText(epro::to_wstring<int>(size.main.min).data());
+					mainGame->ebMainMax->setText(epro::to_wstring<int>(size.main.max).data());
+					mainGame->ebExtraMin->setText(epro::to_wstring<int>(size.extra.min).data());
+					mainGame->ebExtraMax->setText(epro::to_wstring<int>(size.extra.max).data());
+					mainGame->ebSideMin->setText(epro::to_wstring<int>(size.side.min).data());
+					mainGame->ebSideMax->setText(epro::to_wstring<int>(size.side.max).data());
 				};
 				static constexpr DeckSizes ocg_deck_sizes{ {40,60}, {0,15}, {0,15} };
 				static constexpr DeckSizes rush_deck_sizes{ {40,60}, {0,15}, {0,15} };
@@ -1144,15 +1139,15 @@ bool MenuHandler::OnEvent(const irr::SEvent& event) {
 						open_file = true;
 						open_file_name = Utils::ToPathString(to_open_file);
 						if(!mainGame->wSinglePlay->isVisible())
-							ClickButton(mainGame->btnSingleMode);
-						ClickButton(mainGame->btnLoadSinglePlay);
+							GUIUtils::ClickButton(mainGame->device, mainGame->btnSingleMode);
+						GUIUtils::ClickButton(mainGame->device, mainGame->btnLoadSinglePlay);
 						return true;
 					} else if(mainGame->coreloaded && (extension == L"yrpx" || extension == L"yrp") && !mainGame->wSinglePlay->isVisible()) {
 						open_file = true;
 						open_file_name = Utils::ToPathString(to_open_file);
 						if(!mainGame->wReplay->isVisible())
-							ClickButton(mainGame->btnReplayMode);
-						ClickButton(mainGame->btnLoadReplay);
+							GUIUtils::ClickButton(mainGame->device, mainGame->btnReplayMode);
+						GUIUtils::ClickButton(mainGame->device, mainGame->btnLoadReplay);
 						return true;
 					} else if(extension == L"pem" || extension == L"cer" || extension == L"crt") {
 						gGameConfig->override_ssl_certificate_path = BufferIO::EncodeUTF8(to_open_file);

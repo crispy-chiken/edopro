@@ -1,16 +1,4 @@
 #include "config.h"
-#if EDOPRO_WINDOWS
-#define WIN32_LEAN_AND_MEAN
-#include <Tchar.h> //_tmain
-#define edopro_main _tmain
-#else
-#if !(EDOPRO_IOS || EDOPRO_ANDROID)
-#define edopro_main main
-#endif //!(EDOPRO_IOS || EDOPRO_ANDROID)
-#include <unistd.h>
-#include <signal.h>
-#endif //EDOPRO_WINDOWS
-#include <curl/curl.h>
 #include <event2/thread.h>
 #include <IrrlichtDevice.h>
 #include <IGUIButton.h>
@@ -20,6 +8,7 @@
 #include <IGUIEnvironment.h>
 #include <ISceneManager.h>
 #include "client_updater.h"
+#include "cli_args.h"
 #include "config.h"
 #include "data_handler.h"
 #include "logging.h"
@@ -27,6 +16,8 @@
 #include "log.h"
 #include "joystick_wrapper.h"
 #include "utils_gui.h"
+#include "fmt.h"
+#include "curl.h"
 #if EDOPRO_MACOS
 #include "osx_menu.h"
 #endif
@@ -130,8 +121,8 @@ args_t ParseArguments(int argc, epro::path_char* argv[]) {
 
 void CheckArguments(const args_t& args) {
 	if(args[LAUNCH_PARAM::MUTE].enabled) {
-		SetCheckbox(ygo::mainGame->tabSettings.chkEnableSound, false);
-		SetCheckbox(ygo::mainGame->tabSettings.chkEnableMusic, false);
+		ygo::GUIUtils::SetCheckbox(ygo::mainGame->device, ygo::mainGame->tabSettings.chkEnableSound, false);
+		ygo::GUIUtils::SetCheckbox(ygo::mainGame->device, ygo::mainGame->tabSettings.chkEnableMusic, false);
 	}
 
 	ClickButton(ygo::mainGame->btnLanMode);
@@ -152,7 +143,7 @@ inline void ThreadsStartup() {
 #endif
 	auto res = curl_global_init(CURL_GLOBAL_SSL);
 	if(res != CURLE_OK)
-		throw std::runtime_error(epro::format("Curl error: ({}) {}", static_cast<std::underlying_type_t<CURLcode>>(res), curl_easy_strerror(res)));
+		throw std::runtime_error(epro::format("Curl error: ({}) {}", res, curl_easy_strerror(res)));
 }
 inline void ThreadsCleanup() {
 	curl_global_cleanup();
@@ -181,13 +172,18 @@ using Game = ygo::Game;
 
 }
 
-extern "C" int edopro_main(int argc, epro::path_char** argv) {
+#if EDOPRO_WINDOWS
+#define ADMIN_STR "administrator"
+#else
+#define ADMIN_STR "root"
+#endif
+
+int edopro_main(const args_t& args) {
 	std::puts(EDOPRO_VERSION_STRING_DEBUG);
-	const auto args = ParseArguments(argc, argv);
 	if(ygo::Utils::IsRunningAsAdmin() && !args[LAUNCH_PARAM::WANTS_TO_RUN_AS_ADMIN].enabled) {
-		constexpr auto err = "Attempted to run the game as administrator.\n"
+		constexpr auto err = "Attempted to run the game as " ADMIN_STR ".\n"
 			"You should NEVER have to run the game with elevated priviledges.\n"
-			"If for some reason you REALLY want to do that, launch the game with the option \"-i-want-to-be-admin\""_sv;
+			"If for some reason you REALLY want to do that, launch the game with the option \"-i-want-to-be-admin\""sv;
 		epro::print("{}\n", err);
 		ygo::GUIUtils::ShowErrorWindow("Initialization fail", err);
 		return EXIT_FAILURE;
@@ -207,6 +203,7 @@ extern "C" int edopro_main(int argc, epro::path_char** argv) {
 	ygo::Utils::SetupCrashDumpLogging();
 	try {
 		ThreadsStartup();
+		std::atexit(ThreadsCleanup);
 	} catch(const std::exception& e) {
 		epro::stringview text(e.what());
 		ygo::ErrorLog(text);
@@ -215,14 +212,6 @@ extern "C" int edopro_main(int argc, epro::path_char** argv) {
 		return EXIT_FAILURE;
 	}
 	show_changelog = args[LAUNCH_PARAM::CHANGELOG].enabled;
-#if EDOPRO_POSIX
-	setlocale(LC_CTYPE, "UTF-8");
-	struct sigaction sa;
-	sa.sa_handler = SIG_IGN;
-	sigemptyset(&sa.sa_mask);
-	sa.sa_flags = 0;
-	(void)sigaction(SIGCHLD, &sa, 0);
-#endif //EDOPRO_POSIX
 	ygo::ClientUpdater updater(args[LAUNCH_PARAM::OVERRIDE_UPDATE_URL].argument);
 	ygo::gClientUpdater = &updater;
 	std::unique_ptr<ygo::DataHandler> data{ nullptr };
@@ -240,14 +229,18 @@ extern "C" int edopro_main(int argc, epro::path_char** argv) {
 		ygo::ErrorLog(text);
 		epro::print("{}\n", text);
 		ygo::GUIUtils::ShowErrorWindow("Initialization fail", text);
-		ThreadsCleanup();
 		return EXIT_FAILURE;
 	}
 	if (!data->configs->noClientUpdates)
 		updater.CheckUpdates();
 #if EDOPRO_WINDOWS
-	if(!data->configs->showConsole)
+	if(!data->configs->showConsole) {
+		FILE* fDummy;
+		freopen_s(&fDummy, "NUL", "r", stdin);
+		freopen_s(&fDummy, "NUL", "w", stderr);
+		freopen_s(&fDummy, "NUL", "w", stdout);
 		FreeConsole();
+	}
 #endif
 #if EDOPRO_MACOS
 	EDOPRO_SetupMenuBar([]() {
@@ -262,7 +255,7 @@ extern "C" int edopro_main(int argc, epro::path_char** argv) {
 	do {
 		Game _game{};
 		ygo::mainGame = &_game;
-		ygo::mainGame->device = std::exchange(data->tmp_device, nullptr);
+		std::swap(data->tmp_device, ygo::mainGame->device);
 		try {
 			ygo::mainGame->Initialize();
 		}
@@ -271,17 +264,16 @@ extern "C" int edopro_main(int argc, epro::path_char** argv) {
 			ygo::ErrorLog(text);
 			epro::print("{}\n", text);
 			ygo::GUIUtils::ShowErrorWindow("Assets load fail", text);
-			ThreadsCleanup();
 			return EXIT_FAILURE;
 		}
 		if(firstlaunch) {
-			joystick = std::make_unique<JWrapper>(ygo::mainGame->device);
+			joystick = std::make_unique<JWrapper>(ygo::mainGame->device.get());
 			gJWrapper = joystick.get();
 			firstlaunch = false;
 			CheckArguments(args);
 		}
 		reset = ygo::mainGame->MainLoop();
-		data->tmp_device = ygo::mainGame->device;
+		std::swap(data->tmp_device, ygo::mainGame->device);
 		if(reset) {
 			auto device = data->tmp_device;
 			device->setEventReceiver(nullptr);
@@ -296,7 +288,5 @@ extern "C" int edopro_main(int argc, epro::path_char** argv) {
 			env->clear();
 		}
 	} while(reset);
-	data->tmp_device->drop();
-	ThreadsCleanup();
 	return EXIT_SUCCESS;
 }

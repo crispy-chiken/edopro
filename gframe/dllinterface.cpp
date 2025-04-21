@@ -11,6 +11,7 @@
 #include "config.h"
 #include "dllinterface.h"
 #include "utils.h"
+#include "fmt.h"
 
 #if EDOPRO_WINDOWS
 #define CORENAME EPRO_TEXT("ocgcore.dll")
@@ -35,7 +36,11 @@ struct AndroidCore {
 #define CORENAME EPRO_TEXT("libocgcorex64.so")
 #endif //__arm__
 #elif EDOPRO_LINUX
+#if defined(__aarch64__)
+#define CORENAME EPRO_TEXT("libocgcore.aarch64.so")
+#else
 #define CORENAME EPRO_TEXT("libocgcore.so")
+#endif
 #endif //EDOPRO_WINDOWS
 
 #define X(type,name,...) type(*name)(__VA_ARGS__) = nullptr;
@@ -160,6 +165,8 @@ void* LoadOCGcore(epro::path_stringview path) {
 }
 
 void UnloadCore(void* handle) {
+	if(!handle)
+		return;
 	delete static_cast<Core*>(handle);
 }
 
@@ -167,7 +174,7 @@ void* ChangeOCGcore(epro::path_stringview path, void* handle) {
 	Core* newcore = new Core(path);
 	if(!newcore->IsValid())
 		return nullptr;
-	delete static_cast<Core*>(handle);
+	UnloadCore(handle);
 	newcore->Enable();
 	return newcore;
 }

@@ -21,6 +21,7 @@ class IFileArchive;
 class IFileSystem;
 class IReadFile;
 }
+class ITimer;
 class IOSOperator;
 }
 
@@ -54,15 +55,20 @@ namespace ygo {
 
 		static std::vector<SynchronizedIrrArchive> archives;
 		static irr::io::IFileSystem* filesystem;
+		static irr::ITimer* irrTimer;
 		static irr::IOSOperator* OSOperator;
 		static void SetupCrashDumpLogging();
 		static bool IsRunningAsAdmin();
 		static epro::stringview GetLastErrorString();
-		static bool MakeDirectory(epro::path_stringview path);
 		static bool FileCopyFD(int source, int destination);
 		static bool FileCopy(epro::path_stringview source, epro::path_stringview destination);
 		static bool FileMove(epro::path_stringview source, epro::path_stringview destination);
 		static bool FileExists(epro::path_stringview path);
+		static bool FileDelete(epro::path_stringview source);
+		static bool MakeDirectory(epro::path_stringview path);
+		static bool ClearDirectory(epro::path_stringview path);
+		static bool DeleteDirectory(epro::path_stringview path);
+		static bool DirectoryExists(epro::path_stringview path);
 		static inline epro::path_string ToPathString(epro::wstringview input);
 		static inline epro::path_string ToPathString(epro::stringview input);
 		static inline std::string ToUTF8IfNeeded(epro::stringview input);
@@ -71,9 +77,6 @@ namespace ygo {
 		static inline std::wstring ToUnicodeIfNeeded(epro::wstringview input);
 		static bool SetWorkingDirectory(epro::path_stringview newpath);
 		static const epro::path_string& GetWorkingDirectory();
-		static bool FileDelete(epro::path_stringview source);
-		static bool ClearDirectory(epro::path_stringview path);
-		static bool DeleteDirectory(epro::path_stringview source);
 		static void CreateResourceFolders();
 		static void FindFiles(epro::path_stringview path, const std::function<void(epro::path_stringview, bool)>& cb);
 		static std::vector<epro::path_string> FindFiles(epro::path_stringview path, const std::vector<epro::path_stringview>& extensions, int subdirectorylayers = 0);
@@ -109,9 +112,9 @@ namespace ygo {
 		static epro::path_string GetAbsolutePath(epro::path_stringview path);
 
 		template<typename T>
-		static inline std::vector<T> TokenizeString(const T& input, const T& token);
+		static inline std::vector<T> TokenizeString(epro::basic_string_view<typename T::value_type> input, const T& token);
 		template<typename T>
-		static inline std::vector<T> TokenizeString(const T& input, const typename T::value_type& token);
+		static inline std::vector<T> TokenizeString(epro::basic_string_view<typename T::value_type> input, typename T::value_type token);
 		template<typename T>
 		static T ToUpperChar(T c);
 		template<typename T>
@@ -119,7 +122,7 @@ namespace ygo {
 		template<typename T>
 		static T& ToUpperNoAccentsSelf(T& input);
 		/** Returns true if and only if all tokens are contained in the input. */
-		static bool ContainsSubstring(epro::wstringview input, const std::vector<std::wstring>& tokens);
+		static bool ContainsSubstring(epro::wstringview input, const std::vector<epro::wstringview>& tokens);
 		template<typename T>
 		static bool KeepOnlyDigits(T& input, bool negative = false);
 		template<typename T>
@@ -188,7 +191,7 @@ auto Utils::NormalizePathImpl(const epro::basic_string_view<T>& _path, bool trai
 	static constexpr auto prev = CHAR_T_STRINGVIEW(T, "..");
 	static constexpr auto slash = CAST('/');
 	std::replace(path.begin(), path.end(), CAST('\\'), slash);
-	auto paths = TokenizeString(path, slash);
+	auto paths = TokenizeString<std::basic_string<T>>(path, slash);
 	if(paths.empty())
 		return path;
 	bool is_absolute = path.size() && path[0] == slash;
@@ -267,55 +270,53 @@ auto Utils::GetFileNameImpl(const epro::basic_string_view<T>& _file, bool keepex
 #undef CAST
 
 template<typename T>
-inline std::vector<T> Utils::TokenizeString(const T& input, const T& token) {
+inline std::vector<T> Utils::TokenizeString(epro::basic_string_view<typename T::value_type> input, const T& token) {
 	std::vector<T> res;
-	typename T::size_type pos1, pos2 = 0;
-	while((pos1 = input.find(token, pos2)) != T::npos) {
-		if(pos1 != pos2)
-			res.emplace_back(input.begin() + pos2, input.begin() + pos1);
-		pos2 = pos1 + token.size();
+	typename T::size_type pos;
+	while((pos = input.find(token)) != T::npos) {
+		res.emplace_back(input.substr(0, pos));
+		input.remove_prefix(pos + token.size());
 	}
-	if(pos2 != input.size())
-		res.emplace_back(input.begin() + pos2, input.end());
+	if(!input.empty())
+		res.emplace_back(input);
 	return res;
 }
 
 template<typename T>
-inline std::vector<T> Utils::TokenizeString(const T& input, const typename T::value_type& token) {
+inline std::vector<T> Utils::TokenizeString(epro::basic_string_view<typename T::value_type> input, typename T::value_type token) {
 	std::vector<T> res;
-	typename T::size_type pos1, pos2 = 0;
-	while((pos1 = input.find(token, pos2)) != T::npos) {
-		if(pos1 != pos2)
-			res.emplace_back(input.begin() + pos2, input.begin() + pos1);
-		pos2 = pos1 + 1;
+	typename T::size_type pos;
+	while((pos = input.find(token)) != T::npos) {
+		res.emplace_back(input.substr(0, pos));
+		input.remove_prefix(pos + 1);
 	}
-	if(pos2 != input.size())
-		res.emplace_back(input.begin() + pos2, input.end());
+	if(!input.empty())
+		res.emplace_back(input);
 	return res;
 }
 
 template<typename T>
 T Utils::ToUpperChar(T c) {
-#define IN_INTERVAL(start, end) (c >= start && c <= end)
-	if(std::is_same<T, wchar_t>::value) {
-		if(c > 255)
-			return c;
-		if(IN_INTERVAL(192, 197) || IN_INTERVAL(224, 229)
+	if constexpr(std::is_same_v<T, wchar_t>) {
+		auto in_interval = [c](T start, T end) {
+			return c >= start && c <= end;
+		};
+		if(in_interval(192, 197) || in_interval(224, 229)
 		   || c == 0x2c6f || c == 0x250 //latin capital/small letter turned a
 		   || c == 0x2200) //for all
 		{
 			return static_cast<T>('A');
 		}
-		if(IN_INTERVAL(200, 203) || IN_INTERVAL(232, 235)) {
+		if(in_interval(200, 203) || in_interval(232, 235)) {
 			return static_cast<T>('E');
 		}
-		if(IN_INTERVAL(204, 207) || IN_INTERVAL(236, 239)) {
+		if(in_interval(204, 207) || in_interval(236, 239)) {
 			return static_cast<T>('I');
 		}
-		if(IN_INTERVAL(210, 214) || IN_INTERVAL(242, 246)) {
+		if(in_interval(210, 214) || in_interval(242, 246)) {
 			return static_cast<T>('O');
 		}
-		if(IN_INTERVAL(217, 220) || IN_INTERVAL(249, 252)) {
+		if(in_interval(217, 220) || in_interval(249, 252)) {
 			return static_cast<T>('U');
 		}
 		if(c == 209 || c == 241) {
@@ -327,10 +328,11 @@ T Utils::ToUpperChar(T c) {
 		if(c == 191) { //inverted question mark
 			return static_cast<T>('?');
 		}
+		if(c > 255)
+			return c;
 		return static_cast<T>(std::toupper(static_cast<int>(c)));
 	} else
 		return static_cast<T>(std::toupper(c));
-#undef IN_INTERVAL
 }
 
 template<typename T>

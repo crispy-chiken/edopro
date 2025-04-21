@@ -41,13 +41,18 @@ public:
 		SEARCH_MODIFIER_ARCHETYPE_ONLY = 0x2,
 		SEARCH_MODIFIER_NEGATIVE_LOOKUP = 0x4
 	};
+	struct SearchParameter {
+		std::vector<epro::wstringview> tokens;
+		std::vector<uint16_t> setcodes;
+		SEARCH_MODIFIER modifier;
+	};
 	bool OnEvent(const irr::SEvent& event) override;
 	void Initialize(bool refresh = true);
 	void Terminate(bool showmenu = true);
 	const Deck& GetCurrentDeck() const {
 		return current_deck;
 	}
-	bool SetCurrentDeckFromFile(epro::path_stringview file, bool separated = false);
+	bool SetCurrentDeckFromFile(epro::path_stringview file, bool separated = false, RITUAL_LOCATION rituals_in_extra = RITUAL_LOCATION::DEFAULT);
 	void SetCurrentDeck(Deck new_deck) {
 		current_deck = std::move(new_deck);
 		RefreshLimitationStatus();
@@ -58,7 +63,8 @@ private:
 	void GetHoveredCard();
 	bool FiltersChanged();
 	void FilterCards(bool force_refresh = false);
-	bool CheckCard(CardDataM* data, SEARCH_MODIFIER modifier, const std::vector<std::wstring>& tokens, const std::vector<uint16_t>& setcode);
+	bool CheckCardProperties(const CardDataM& data);
+	bool CheckCardText(const CardDataM& data, const SearchParameter& search_parameter);
 	void ClearFilter();
 	void ClearSearch();
 	void SortList();
@@ -131,6 +137,7 @@ public:
 	uint16_t extra_xyz_count;
 	uint16_t extra_synchro_count;
 	uint16_t extra_link_count;
+	uint16_t extra_rush_ritual_count;
 
 	uint16_t side_monster_count;
 	uint16_t side_spell_count;

@@ -1,13 +1,13 @@
 #include <IrrCompileConfig.h>
 #include <path.h>
 #include "game_config.h"
-#include <fmt/format.h>
 #include "bufferio.h"
 #include "porting.h"
 #include "utils.h"
 #include "config.h"
 #include "logging.h"
 #include "file_stream.h"
+#include "fmt.h"
 
 namespace ygo {
 
@@ -46,14 +46,21 @@ GameConfig::GameConfig() {
 
 template<typename T, typename tag = T>
 T parseOption(std::string& value) {
-	if(std::is_unsigned<T>::value) {
-		if(std::is_same<T, uint64_t>::value)
-			return static_cast<T>(std::stoull(value));
+	if constexpr(std::is_unsigned_v<T>) {
 		return static_cast<T>(std::stoul(value));
+	} else {
+		return static_cast<T>(std::stoi(value));
 	}
-	if(std::is_same<T, int64_t>::value)
-		return static_cast<T>(std::stoll(value));
-	return static_cast<T>(std::stoi(value));
+}
+
+template<>
+uint64_t parseOption<uint64_t>(std::string& value) {
+	return static_cast<uint64_t>(std::stoull(value));
+}
+
+template<>
+int64_t parseOption<int64_t>(std::string& value) {
+	return static_cast<int64_t>(std::stoll(value));
 }
 
 template<>
@@ -119,7 +126,7 @@ ygo::GameConfig::FallbackFonts parseOption<ygo::GameConfig::FallbackFonts>(std::
 #ifdef YGOPRO_USE_BUNDLED_FONT
 	bool listed_bundled = false;
 #endif
-	for(auto& font : Utils::TokenizeString(value, '"')) {
+	for(auto& font : Utils::TokenizeString<std::string>(value, '"')) {
 		if(font.find_first_not_of(' ') == std::string::npos)
 			continue;
 		const auto parsed_font = parseOption<GameConfig::TextFont>(font);
@@ -159,12 +166,12 @@ uint8_t parseOption<uint8_t, ygo::GameConfig::BoolMaybeUndefined>(std::string& v
 
 template<typename T>
 std::string serializeOption(const T& value) {
-	return fmt::to_string(value);
+	return epro::to_string(value);
 }
 
 template<>
 std::string serializeOption(const uint8_t& value) {
-	return fmt::to_string((int)value);
+	return epro::to_string((int)value);
 }
 
 template<>
@@ -174,7 +181,7 @@ std::string serializeOption(const float& value) {
 
 template<>
 std::string serializeOption(const bool& value) {
-	return fmt::to_string((int)value);
+	return epro::to_string((int)value);
 }
 
 template<>
@@ -184,7 +191,7 @@ std::string serializeOption<std::wstring>(const std::wstring& value) {
 
 template<>
 std::string serializeOption(const ygo::GameConfig::TextFont& value) {
-	return epro::format("{} {}", Utils::ToUTF8IfNeeded(value.font), value.size);
+	return epro::format("{} {:d}", Utils::ToUTF8IfNeeded(value.font), value.size);
 }
 
 template<>
@@ -207,8 +214,10 @@ std::string serializeOption(const irr::video::E_DRIVER_TYPE& driver) {
 #if EDOPRO_WINDOWS
 	case irr::video::EDT_DIRECT3D9:
 		return "d3d9";
+#if (IRRLICHT_VERSION_MAJOR==1 && IRRLICHT_VERSION_MINOR==9)
 	case irr::video::EDT_DIRECT3D9_ON_12:
 		return "d3d9on12";
+#endif
 #endif
 #endif
 #if  !EDOPRO_MACOS && (IRRLICHT_VERSION_MAJOR==1 && IRRLICHT_VERSION_MINOR==9)

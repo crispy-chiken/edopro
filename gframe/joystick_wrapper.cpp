@@ -1,7 +1,6 @@
 #include "joystick_wrapper.h"
 #ifndef YGOPRO_USE_JOYSTICK
-JWrapper::JWrapper(irr::IrrlichtDevice* _device) {
-	(void)_device;
+JWrapper::JWrapper([[maybe_unused]] irr::IrrlichtDevice* _device) {
 }
 
 JWrapper::~JWrapper() {
@@ -12,7 +11,6 @@ void JWrapper::ProcessEvents() {
 #else
 #include <SDL2/SDL.h>
 #include <IrrlichtDevice.h>
-#include <fmt/printf.h>
 #include <IEventReceiver.h>
 JWrapper::JWrapper(irr::IrrlichtDevice* _device) {
 	device = _device;

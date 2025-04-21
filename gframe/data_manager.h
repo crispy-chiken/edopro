@@ -83,6 +83,19 @@ struct CardDataC {
 			return false;
 		return (pcard->alias - pcard->code < CARD_ARTWORK_VERSIONS_OFFSET || pcard->code - pcard->alias < CARD_ARTWORK_VERSIONS_OFFSET);
 	}
+
+	uint32_t getRealCode() const {
+		// dummy entries have a code of 0 with the alias corresponding to the actual code
+		return code ? code : alias;
+	}
+
+	bool isRitualMonster() const {
+		return (type & (TYPE_MONSTER | TYPE_RITUAL)) == (TYPE_MONSTER | TYPE_RITUAL);
+	}
+
+	bool isRush() const {
+		return ot & SCOPE_RUSH;
+	}
 };
 struct CardString {
 	std::wstring name;
@@ -153,7 +166,7 @@ public:
 		//strings 1050 above are already used, read the rest from this other range
 		return (2500 - 30) + race_idx;
 	}
-	std::vector<uint16_t> GetSetCode(const std::vector<std::wstring>& setname) const;
+	std::vector<uint16_t> GetSetCode(const std::vector<epro::wstringview>& setname) const;
 	std::wstring GetNumString(size_t num, bool bracket = false) const;
 	epro::wstringview FormatLocation(uint32_t location, int sequence) const;
 	std::wstring FormatAttribute(uint32_t attribute) const;
@@ -165,7 +178,7 @@ public:
 
 	std::unordered_map<uint32_t, CardDataM> cards;
 
-	static constexpr auto unknown_string = L"???"_sv;
+	static constexpr auto unknown_string = L"???"sv;
 	static void CardReader(void* payload, uint32_t code, OCG_CardData* data);
 	static bool deck_sort_lv(const CardDataC* l1, const CardDataC* l2);
 	static bool deck_sort_atk(const CardDataC* l1, const CardDataC* l2);

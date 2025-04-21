@@ -1,7 +1,5 @@
 #include <sstream>
 #include <nlohmann/json.hpp>
-#include <fmt/format.h>
-#include <fmt/printf.h>
 #include <irrlicht.h>
 #include "client_updater.h"
 #include "game_config.h"
@@ -40,6 +38,7 @@
 #include "CGUIWindowedTabControl/CGUIWindowedTabControl.h"
 #include "file_stream.h"
 #include "porting.h"
+#include "fmt.h"
 
 #if EDOPRO_ANDROID || EDOPRO_IOS
 #include "CGUICustomComboBox/CGUICustomComboBox.h"
@@ -140,18 +139,13 @@ void Game::Initialize() {
 #endif
 	filesystem = device->getFileSystem();
 	filesystem->grab();
-	coreloaded = true;
-#ifdef YGOPRO_BUILD_DLL
-	if(!(ocgcore = LoadOCGcore(Utils::GetWorkingDirectory())) && !(ocgcore = LoadOCGcore(epro::format(EPRO_TEXT("{}/expansions/"), Utils::GetWorkingDirectory()))))
-		coreloaded = false;
-#endif
-	skinSystem = new CGUISkinSystem(epro::format(EPRO_TEXT("{}/skin"), Utils::GetWorkingDirectory()).data(), device);
+	skinSystem = new CGUISkinSystem(epro::format(EPRO_TEXT("{}/skin"), Utils::GetWorkingDirectory()).data(), device.get());
 	if(!skinSystem)
 		throw std::runtime_error("Couldn't create skin system");
 	linePatternGL = 0x0f0f;
 	menuHandler.prev_sel = -1;
 	driver = device->getVideoDriver();
-	imageManager.SetDevice(device);
+	imageManager.SetDevice(device.get());
 	imageManager.Initial();
 	RefreshAiDecks();
 	if(!discord.Initialize())
@@ -207,7 +201,7 @@ void Game::Initialize() {
 	stAbout = irr::gui::CGUICustomText::addCustomText(L"Project Ignis: EDOPro\n"
 											L"The bleeding-edge automatic duel simulator\n"
 											L"\n"
-											L"Copyright (C) 2020-2023  Edoardo Lolletti (edo9300) and others\n"
+											L"Copyright (C) 2020-2025 Edoardo Lolletti (edo9300) and others\n"
 											L"Card scripts and supporting resources by Project Ignis.\n"
 											L"https://github.com/edo9300/edopro\n"
 											L"https://github.com/edo9300/ygopro-core\n"
@@ -219,8 +213,9 @@ void Game::Initialize() {
 											L"\n"
 											L"Project Ignis:\n"
 											L"ahtelel, Cybercatman, Dragon3989, DyXel, edo9300, EerieCode,"
-											L"Gideon, Hatter, Icematoro, Larry126, LogicalNonsense, pyrQ, Sanct,"
+											L"Finn, Gideon, Hatter, Icematoro, Larry126, Naim, pyrQ, Sanct,"
 											L"senpaizuri, Steeldarkeagel, TheRazgriz, WolfOfWolves, Yamato, YoshiDuels\n"
+											L"\n"
 											L"Default background and icon: LogicalNonsense\n"
 											L"Default fields: Icematoro\n"
 											L"\n"
@@ -241,7 +236,6 @@ void Game::Initialize() {
 	int titleWidth = stVersion->getTextWidth();
 	stVersion->setRelativePosition(irr::core::recti(Scale(10), Scale(10), titleWidth + Scale(10), Scale(35)));
 	stCoreVersion = env->addStaticText(L"", Scale(10, 40, 500, 65), false, false, wVersion);
-	RefreshUICoreVersion();
 	stExpectedCoreVersion = env->addStaticText(
 		GetLocalizedExpectedCore().data(),
 		Scale(10, 70, 290, 95), false, true, wVersion);
@@ -277,7 +271,6 @@ void Game::Initialize() {
 	defaultStrings.emplace_back(btnModeExit, 1210);
 	offset += 35;
 #undef OFFSET
-	btnSingleMode->setEnabled(coreloaded);
 	//lan mode
 	wLanWindow = env->addWindow(Scale(220, 100, 800, 520), false, gDataManager->GetSysString(1200).data());
 	defaultStrings.emplace_back(wLanWindow, 1200);
@@ -307,7 +300,6 @@ void Game::Initialize() {
 	defaultStrings.emplace_back(btnJoinCancel, 1212);
 	btnCreateHost = env->addButton(Scale(460, 25, 570, 50), wLanWindow, BUTTON_CREATE_HOST, gDataManager->GetSysString(1224).data());
 	defaultStrings.emplace_back(btnCreateHost, 1224);
-	btnCreateHost->setEnabled(coreloaded);
 
 	PopulateGameHostWindows();
 	PopulateAIBotWindow();
@@ -596,15 +588,12 @@ void Game::Initialize() {
 	btnHandTest = AlignElementWithParent(env->addButton(Scale(205, 90, 295, 130), nullptr, BUTTON_HAND_TEST, gDataManager->GetSysString(1297).data()));
 	defaultStrings.emplace_back(btnHandTest, 1297);
 	btnHandTest->setVisible(false);
-	btnHandTest->setEnabled(coreloaded);
 
 	btnHandTestSettings = AlignElementWithParent(env->addButton(Scale(205, 140, 295, 180), 0, BUTTON_HAND_TEST_SETTINGS, L""));
 	btnHandTestSettings->setVisible(false);
-	btnHandTestSettings->setEnabled(coreloaded);
 
 	stHandTestSettings = AlignElementWithParent(irr::gui::CGUICustomText::addCustomText(gDataManager->GetSysString(1375).data(), false, env, btnHandTestSettings, -1, Scale(0, 0, 90, 40)));
 	stHandTestSettings->setWordWrap(true);
-	stHandTestSettings->setEnabled(coreloaded);
 	stHandTestSettings->setTextAlignment(irr::gui::EGUIA_CENTER, irr::gui::EGUIA_CENTER);
 	defaultStrings.emplace_back(stHandTestSettings, 1375);
 
@@ -639,6 +628,7 @@ void Game::Initialize() {
 	//
 
 	btnYdkeManage = AlignElementWithParent(env->addButton(Scale(205, 190, 295, 230), 0, BUTTON_DECK_YDKE_MANAGE, gDataManager->GetSysString(2083).data()));
+	defaultStrings.emplace_back(btnYdkeManage, 2083);
 	btnYdkeManage->setVisible(false);
 	btnYdkeManage->setEnabled(true);
 
@@ -693,6 +683,7 @@ void Game::Initialize() {
 	cbAttribute->setMaxSelectionRows(10);
 	ReloadCBAttribute();
 	stRace = env->addStaticText(gDataManager->GetSysString(1321).data(), Scale(10, 51, 70, 71), false, false, wFilter);
+	defaultStrings.emplace_back(stRace, 1321);
 	cbRace = AlignElementWithParent(AddComboBox(env, Scale(60, 49, 190, 69), wFilter, COMBOBOX_OTHER_FILT));
 	cbRace->setMaxSelectionRows(10);
 	ReloadCBRace();
@@ -1057,12 +1048,6 @@ void Game::Initialize() {
 
 	//load server(s)
 	LoadServers();
-#ifdef YGOPRO_BUILD_DLL
-	if(!coreloaded) {
-		stMessage->setText(gDataManager->GetSysString(1430).data());
-		PopupElement(wMessage);
-	}
-#endif
 	fpsCounter = env->addStaticText(L"", Scale(950, 620, 1024, 640), false, false);
 	fpsCounter->setOverrideColor(skin::FPS_TEXT_COLOR_VAL);
 	fpsCounter->setVisible(gGameConfig->showFPS);
@@ -1092,6 +1077,21 @@ void Game::Initialize() {
 	Utils::CreateResourceFolders();
 
 	LoadGithubRepositories();
+	if(LoadCore()) {
+		(void)0;
+	}
+#ifdef YGOPRO_BUILD_DLL
+	else {
+		stMessage->setText(gDataManager->GetSysString(1430).data());
+		PopupElement(wMessage);
+	}
+#endif
+	btnSingleMode->setEnabled(coreloaded);
+	btnCreateHost->setEnabled(coreloaded);
+	btnHandTest->setEnabled(coreloaded);
+	btnHandTestSettings->setEnabled(coreloaded);
+	stHandTestSettings->setEnabled(coreloaded);
+	RefreshUICoreVersion();
 	ApplySkin(EPRO_TEXT(""), true);
 	auto selectedLocale = gSettings.cbCurrentLocale->getSelected();
 	if(selectedLocale != 0)
@@ -1102,20 +1102,65 @@ void Game::Initialize() {
 	env->setFocus(wMainMenu);
 }
 
+bool Game::LoadCore() {
+	coreloaded = true;
+#ifdef YGOPRO_BUILD_DLL
+	coreJustLoaded = false;
+	ocgcore = LoadOCGcore(Utils::GetWorkingDirectory());
+	if(ocgcore){
+		corename = L"./";
+	} else {
+		const auto path = epro::format(EPRO_TEXT("{}/expansions/"), Utils::GetWorkingDirectory());
+		ocgcore = LoadOCGcore(path);
+		if(ocgcore)
+			corename = L"./expansions/";
+	}
+	coreloaded = ocgcore != nullptr;
+	if(gRepoManager->IsReadOnly())
+		LoadCoreFromRepos();
+#endif
+	return coreloaded;
+}
+
+#ifdef YGOPRO_BUILD_DLL
+void Game::LoadCoreFromRepos() {
+	if(cores_to_load.empty() || gRepoManager->GetUpdatingReposNumber() > 0)
+		return;
+	for(auto& path : cores_to_load) {
+		void* ncore = ChangeOCGcore(Utils::GetWorkingDirectory() + path, ocgcore);
+		if(!ncore)
+			continue;
+		corename = Utils::ToUnicodeIfNeeded(path);
+		coreJustLoaded = true;
+		ocgcore = ncore;
+		if(!coreloaded) {
+			coreloaded = true;
+			btnSingleMode->setEnabled(true);
+			btnCreateHost->setEnabled(true);
+			btnHandTest->setEnabled(true);
+			btnHandTestSettings->setEnabled(true);
+			stHandTestSettings->setEnabled(true);
+		}
+		break;
+	}
+	cores_to_load.clear();
+}
+#endif
+
 static constexpr std::pair<epro::wstringview, irr::video::E_DRIVER_TYPE> supported_graphic_drivers[]{
-	{ L"Default"_sv, irr::video::EDT_COUNT},
+	{ L"Default"sv, irr::video::EDT_COUNT},
 #if !EDOPRO_ANDROID && !EDOPRO_IOS
-	{ L"OpenGL"_sv, irr::video::EDT_OPENGL },
+	{ L"OpenGL"sv, irr::video::EDT_OPENGL },
 #endif
 #if EDOPRO_WINDOWS
-	{ L"Direct3D 9"_sv, irr::video::EDT_DIRECT3D9},
+	{ L"Direct3D 9"sv, irr::video::EDT_DIRECT3D9},
 #if (IRRLICHT_VERSION_MAJOR==1 && IRRLICHT_VERSION_MINOR==9)
-	{ L"Direct3D 9on12"_sv, irr::video::EDT_DIRECT3D9_ON_12},
+	{ L"Direct3D 9on12"sv, irr::video::EDT_DIRECT3D9_ON_12},
 #endif
 #endif
 #if !EDOPRO_MACOS && (IRRLICHT_VERSION_MAJOR==1 && IRRLICHT_VERSION_MINOR==9)
-	{ L"OpenGL ES 1"_sv, irr::video::EDT_OGLES1 },
-	{ L"OpenGL ES 2"_sv, irr::video::EDT_OGLES2 },
+	{ L"OpenGL ES 1"sv, irr::video::EDT_OGLES1 },
+	{ L"OpenGL ES 2"sv, irr::video::EDT_OGLES2 },
 #endif
 };
 
@@ -1139,7 +1184,7 @@ void Game::PopulateGameHostWindows() {
 		ReloadCBRule();
 		cbRule->setSelected(gGameConfig->lastallowedcards);
 		defaultStrings.emplace_back(env->addStaticText(gDataManager->GetSysString(1227).data(), Scale(20, 70, 220, 90), false, false, tDuelSettings), 1227);
-#define WStr(i) fmt::to_wstring<int>(i).data()
+#define WStr(i) epro::to_wstring<int>(i).data()
 		ebTeam1 = env->addEditBox(WStr(gGameConfig->team1count), Scale(140, 65, 170, 90), true, tDuelSettings, EDITBOX_TEAM_COUNT);
 		ebTeam1->setTextAlignment(irr::gui::EGUIA_CENTER, irr::gui::EGUIA_CENTER);
 		auto vsstring = env->addStaticText(gDataManager->GetSysString(1380).data(), Scale(175, 65, 195, 90), false, false, tDuelSettings);
@@ -1649,6 +1694,8 @@ void Game::PopulateSettingsWindow() {
 		gSettings.chkIgnoreDeckContents = env->addCheckBox(gGameConfig->ignoreDeckContents, GetNextRect(), sPanel, CHECKBOX_IGNORE_DECK_CONTENTS, gDataManager->GetSysString(12119).data());
 		menuHandler.MakeElementSynchronized(gSettings.chkIgnoreDeckContents);
 		defaultStrings.emplace_back(gSettings.chkIgnoreDeckContents, 12119);
+		gSettings.chkAddCardNamesInDeckList = env->addCheckBox(gGameConfig->addCardNamesToDeckList, GetNextRect(), sPanel, CHECKBOX_ADD_CARD_NAME_TO_DECK_LIST, gDataManager->GetSysString(12123).data());
+		defaultStrings.emplace_back(gSettings.chkAddCardNamesInDeckList, 12123);
 	}
 
 	{
@@ -1709,6 +1756,9 @@ void Game::PopulateSettingsWindow() {
 		gSettings.chkNoChainDelay = env->addCheckBox(gGameConfig->chkWaitChain, GetNextRect(), sPanel, CHECKBOX_NO_CHAIN_DELAY, gDataManager->GetSysString(1277).data());
 		menuHandler.MakeElementSynchronized(gSettings.chkNoChainDelay);
 		defaultStrings.emplace_back(gSettings.chkNoChainDelay, 1277);
+
+		gSettings.chkAutoRPS = env->addCheckBox(gGameConfig->chkAutoRPS, GetNextRect(), sPanel, CHECKBOX_AUTO_RPS, gDataManager->GetSysString(12124).data());
+		defaultStrings.emplace_back(gSettings.chkAutoRPS, 12124);
 	}
 
 	{
@@ -1963,79 +2013,12 @@ bool Game::MainLoop() {
 				ApplySkin(EPRO_TEXT(""), true);
 			}
 		}
-		auto repos = gRepoManager->GetReadyRepos();
-		if(!repos.empty()) {
-			bool refresh_db = false;
-			for(auto& repo : repos) {
-				auto grepo = &repoInfoGui[repo->repo_path];
-				UpdateRepoInfo(repo, grepo);
-				auto data_path = Utils::ToPathString(repo->data_path);
-				auto files = Utils::FindFiles(data_path, { EPRO_TEXT("cdb") }, 0);
-				if(!repo->is_language) {
-					for(auto& file : files) {
-						const auto db_path = data_path + file;
-						if(gDataManager->LoadDB(db_path)) {
-							WindBot::AddDatabase(db_path);
-							refresh_db = true;
-						}
-					}
-					gDataManager->LoadStrings(data_path + EPRO_TEXT("strings.conf"));
-					refresh_db = gDataManager->LoadIdsMapping(data_path + EPRO_TEXT("mappings.json")) || refresh_db;
-				} else {
-					if(Utils::ToUTF8IfNeeded(gGameConfig->locale) == repo->language) {
-						for(auto& file : files)
-							refresh_db = gDataManager->LoadLocaleDB(data_path + file) || refresh_db;
-						gDataManager->LoadLocaleStrings(data_path + EPRO_TEXT("strings.conf"));
-					}
-					auto langpath = Utils::ToPathString(repo->language);
-					auto lang = Utils::ToUpperNoAccents(langpath);
-					auto it = std::find_if(locales.begin(), locales.end(),
-										   [&lang](const auto& locale) {
-											   return Utils::ToUpperNoAccents(locale.first) == lang;
-										   });
-					if(it != locales.end()) {
-						it->second.push_back(std::move(data_path));
-					} else {
-						Utils::MakeDirectory(EPRO_TEXT("./config/languages/") + langpath);
-						locales.emplace_back(std::move(langpath), std::vector<epro::path_string>{ std::move(data_path) });
-						gSettings.cbCurrentLocale->addItem(BufferIO::DecodeUTF8(repo->language).data());
-					}
-				}
-			}
-			if(refresh_db && is_building) {
-				if(!is_siding)
-					deckBuilder.RefreshCurrentDeck();
-				if(deckBuilder.results.size())
-					deckBuilder.StartFilter(true);
-			}
-			if(gRepoManager->GetUpdatingReposNumber() == 0) {
-				gdeckManager->StopDummyLoading();
-				ReloadElementsStrings();
-			}
-		}
+		ParseGithubRepositories(gRepoManager->GetReadyRepos());
 		if(ServerLobby::HasRefreshedRooms())
 			ServerLobby::FillOnlineRooms();
 #ifdef YGOPRO_BUILD_DLL
-		bool coreJustLoaded = false;
-		if(!dInfo.isStarted && cores_to_load.size() && gRepoManager->GetUpdatingReposNumber() == 0) {
-			for(auto& path : cores_to_load) {
-				void* ncore = nullptr;
-				if((ncore = ChangeOCGcore(Utils::GetWorkingDirectory() + path, ocgcore))) {
-					corename = Utils::ToUnicodeIfNeeded(path);
-					coreJustLoaded = true;
-					ocgcore = ncore;
-					if(!coreloaded) {
-						coreloaded = true;
-						btnSingleMode->setEnabled(true);
-						btnCreateHost->setEnabled(true);
-						btnHandTest->setEnabled(true);
-						btnHandTestSettings->setEnabled(true);
-						stHandTestSettings->setEnabled(true);
-					}
-					break;
-				}
-			}
-			cores_to_load.clear();
+		if(!dInfo.isStarted) {
+			LoadCoreFromRepos();
 		}
 #endif //YGOPRO_BUILD_DLL
 		for(auto& repo : gRepoManager->GetRepoStatus()) {
@@ -2333,8 +2316,7 @@ bool Game::MainLoop() {
 	ClearTextures();
 	SaveConfig();
 #ifdef YGOPRO_BUILD_DLL
-	if(ocgcore)
-		UnloadCore(ocgcore);
+	UnloadCore(ocgcore);
 #endif //YGOPRO_BUILD_DLL
 	//device->drop();
 	return restart;
@@ -2596,6 +2578,7 @@ void Game::SaveConfig() {
 	gGameConfig->chkRandomPos = gSettings.chkRandomPos->isChecked();
 	gGameConfig->chkAutoChain = gSettings.chkAutoChainOrder->isChecked();
 	gGameConfig->chkWaitChain = gSettings.chkNoChainDelay->isChecked();
+	gGameConfig->chkAutoRPS = gSettings.chkAutoRPS->isChecked();
 	gGameConfig->chkIgnore1 = gSettings.chkIgnoreOpponents->isChecked();
 	gGameConfig->chkIgnore2 = gSettings.chkIgnoreSpectators->isChecked();
 	gGameConfig->chkHideHintButton = gSettings.chkHideChainButtons->isChecked();
@@ -2671,6 +2654,59 @@ void Game::LoadGithubRepositories() {
 			update_ready = false;
 		}
 	}
+	if(gRepoManager->IsReadOnly())
+		ParseGithubRepositories(gRepoManager->GetReadyRepos());
+}
+void Game::ParseGithubRepositories(const std::vector<const GitRepo*>& repos) {
+	if(repos.empty())
+		return;
+	bool refresh_db = false;
+	for(auto& repo : repos) {
+		auto grepo = &repoInfoGui[repo->repo_path];
+		UpdateRepoInfo(repo, grepo);
+		auto data_path = Utils::ToPathString(repo->data_path);
+		auto files = Utils::FindFiles(data_path, { EPRO_TEXT("cdb") }, 0);
+		if(!repo->is_language) {
+			for(auto& file : files) {
+				const auto db_path = data_path + file;
+				if(gDataManager->LoadDB(db_path)) {
+					WindBot::AddDatabase(db_path);
+					refresh_db = true;
+				}
+			}
+			gDataManager->LoadStrings(data_path + EPRO_TEXT("strings.conf"));
+			refresh_db = gDataManager->LoadIdsMapping(data_path + EPRO_TEXT("mappings.json")) || refresh_db;
+		} else {
+			if(Utils::ToUTF8IfNeeded(gGameConfig->locale) == repo->language) {
+				for(auto& file : files)
+					refresh_db = gDataManager->LoadLocaleDB(data_path + file) || refresh_db;
+				gDataManager->LoadLocaleStrings(data_path + EPRO_TEXT("strings.conf"));
+			}
+			auto langpath = Utils::ToPathString(repo->language);
+			auto lang = Utils::ToUpperNoAccents(langpath);
+			auto it = std::find_if(locales.begin(), locales.end(),
+								   [&lang](const auto& locale) {
+									   return Utils::ToUpperNoAccents(locale.first) == lang;
+								   });
+			if(it != locales.end()) {
+				it->second.push_back(std::move(data_path));
+			} else {
+				Utils::MakeDirectory(EPRO_TEXT("./config/languages/") + langpath);
+				locales.emplace_back(std::move(langpath), std::vector<epro::path_string>{ std::move(data_path) });
+				gSettings.cbCurrentLocale->addItem(BufferIO::DecodeUTF8(repo->language).data());
+			}
+		}
+	}
+	if(refresh_db && is_building) {
+		if(!is_siding)
+			deckBuilder.RefreshCurrentDeck();
+		if(deckBuilder.results.size())
+			deckBuilder.StartFilter(true);
+	}
+	if(gRepoManager->GetUpdatingReposNumber() == 0) {
+		gdeckManager->StopDummyLoading();
+		ReloadElementsStrings();
+	}
 }
 void Game::UpdateRepoInfo(const GitRepo* repo, RepoGui* grepo) {
 	if(repo->history.error.size()) {
@@ -2682,9 +2718,11 @@ void Game::UpdateRepoInfo(const GitRepo* repo, RepoGui* grepo) {
 		grepo->history_button2->setText(gDataManager->GetSysString(1434).data());
 		defaultStrings.emplace_back(grepo->history_button2, 1434);
 		grepo->history_button2->setEnabled(true);
+		auto error_string = repo->not_git_repo ? epro::format(gDataManager->GetSysString(1452), BufferIO::DecodeUTF8(repo->repo_path)) :
+															  epro::format(gDataManager->GetSysString(1435), BufferIO::DecodeUTF8(repo->url));
 		grepo->commit_history_full = epro::format(L"{}\n{}",
-												epro::format(gDataManager->GetSysString(1435), BufferIO::DecodeUTF8(repo->url)),
-												epro::format(gDataManager->GetSysString(1436), BufferIO::DecodeUTF8(repo->history.error))
+												  error_string,
+												  epro::format(gDataManager->GetSysString(1436), BufferIO::DecodeUTF8(repo->history.error))
 		);
 		grepo->commit_history_partial = grepo->commit_history_full;
 		return;
@@ -2721,7 +2759,7 @@ void Game::UpdateRepoInfo(const GitRepo* repo, RepoGui* grepo) {
 	grepo->history_button2->setEnabled(true);
 	if(!repo->is_language) {
 		script_dirs.insert(script_dirs.begin(), Utils::ToPathString(repo->script_path));
-		auto init_script = fmt::format(EPRO_TEXT("{}{}"), script_dirs.front(), EPRO_TEXT("init.lua"));
+		auto init_script = epro::format(EPRO_TEXT("{}{}"), script_dirs.front(), EPRO_TEXT("init.lua"));
 		if(Utils::FileExists(init_script))
 			init_scripts.push_back(std::move(init_script));
 		auto script_subdirs = Utils::FindSubfolders(Utils::ToPathString(repo->script_path), 2);
@@ -3077,33 +3115,33 @@ void Game::UpdateDuelParam() {
 			cbDuelRule->removeItem(8);
 			break;
 		}
-	}/*fallthrough*/
+	}
+	[[fallthrough]];
 	case DUEL_MODE_RUSH: {
 		cbDuelRule->setSelected(6);
 		if(flag2 == DUEL_MODE_MR5_FORB) {
 			cbDuelRule->removeItem(8);
 			break;
 		}
-	}/*fallthrough*/
+	}
+	[[fallthrough]];
 	case DUEL_MODE_GOAT: {
 		cbDuelRule->setSelected(7);
 		if(flag2 == DUEL_MODE_MR1_FORB) {
 			cbDuelRule->removeItem(8);
 			break;
 		}
-	}/*fallthrough*/
+	}
+	[[fallthrough]];
 	default:
 		switch(flag & ~DUEL_TCG_SEGOC_NONPUBLIC) {
-#ifdef __GNUC__
-#pragma GCC diagnostic push
-#pragma GCC diagnostic ignored "-Wimplicit-fallthrough"
-#endif
 	#define CHECK(MR) \
 		case DUEL_MODE_MR##MR:{ \
 			cbDuelRule->setSelected(MR - 1); \
 			if (flag2 == DUEL_MODE_MR##MR##_FORB) { \
 				cbDuelRule->removeItem(8); break; } \
-			}
+			} \
+			[[fallthrough]];
 			CHECK(1)
 			CHECK(2)
 			CHECK(3)
@@ -3115,9 +3153,6 @@ void Game::UpdateDuelParam() {
 			cbDuelRule->setSelected(8);
 			break;
 		}
-#ifdef __GNUC__
-#pragma GCC diagnostic pop
-#endif
 		}
 		break;
 	}
@@ -3417,6 +3452,8 @@ void Game::ReloadCBLimit() {
 	} else {
 		chkAnime->setEnabled(false);
 		cbLimit->addItem(gDataManager->GetSysString(1912).data(), DeckBuilder::LIMITATION_FILTER_LEGEND);
+		cbLimit->addItem(gDataManager->GetSysString(1266).data(), DeckBuilder::LIMITATION_FILTER_ILLEGAL);
+		cbLimit->addItem(gDataManager->GetSysString(1903).data(), DeckBuilder::LIMITATION_FILTER_PRERELEASE);
 		cbLimit->addItem(gDataManager->GetSysString(1310).data(), DeckBuilder::LIMITATION_FILTER_ALL);
 	}
 }
@@ -3568,6 +3605,10 @@ void Game::ReloadElementsStrings() {
 	prev = gSettings.cbCoreLogOutput->getSelected();
 	ReloadCBCoreLogOutput();
 	gSettings.cbCoreLogOutput->setSelected(prev);
+
+	prev = gSettings.cbVSync->getSelected();
+	ReloadCBVsync();
+	gSettings.cbVSync->setSelected(prev);
 
 	((irr::gui::CGUICustomTable*)roomListTable)->setColumnText(1, gDataManager->GetSysString(1225).data());
 	((irr::gui::CGUICustomTable*)roomListTable)->setColumnText(2, gDataManager->GetSysString(1227).data());
@@ -3877,7 +3918,7 @@ OCG_Duel Game::SetupDuel(OCG_DuelOptions opts) {
 	opts.payload3 = this;
 	opts.enableUnsafeLibraries = 1;
 	OCG_Duel pduel = nullptr;
-	OCG_CreateDuel(&pduel, opts);
+	OCG_CreateDuel(&pduel, &opts);
 	LoadScript(pduel, "constant.lua");
 	LoadScript(pduel, "utility.lua");
 	for(const auto& script : init_scripts) {

@@ -1,13 +1,12 @@
 #include "utils_gui.h"
 #include <irrlicht.h>
 #include <ICursorControl.h>
-#include <fmt/chrono.h>
-#include <fmt/format.h>
 #include "config.h"
 #include "utils.h"
 #include "game_config.h"
 #include "text_types.h"
 #include "porting.h"
+#include "fmt.h"
 #if EDOPRO_WINDOWS
 #define WIN32_LEAN_AND_MEAN
 #include <Windows.h>
@@ -19,7 +18,7 @@
 using CCursorControl = irr::CCursorControl;
 #endif
 #elif EDOPRO_MACOS
-#import <CoreFoundation/CoreFoundation.h>
+#include <CoreFoundation/CoreFoundation.h>
 #include "osx_menu.h"
 #elif EDOPRO_LINUX
 #if !(IRRLICHT_VERSION_MAJOR==1 && IRRLICHT_VERSION_MINOR==9)
@@ -32,7 +31,7 @@ using CCursorControl = irr::CCursorControl;
 
 static inline bool try_guess_wayland() {
 	const char* env = getenv("XDG_SESSION_TYPE");
-	return env == nullptr || env != "x11"_sv;
+	return env == nullptr || env != "x11"sv;
 }
 #endif //EDOPRO_WINDOWS
 
@@ -63,8 +62,7 @@ static HWND GetWindowHandle(irr::video::IVideoDriver* driver) {
 }
 #endif
 
-static inline irr::video::E_DRIVER_TYPE getDefaultDriver(irr::E_DEVICE_TYPE device_type) {
-	(void)device_type;
+static inline irr::video::E_DRIVER_TYPE getDefaultDriver([[maybe_unused]] irr::E_DEVICE_TYPE device_type) {
 #if EDOPRO_ANDROID
 	return irr::video::EDT_OGLES2;
 #elif EDOPRO_IOS
@@ -80,7 +78,7 @@ static inline irr::video::E_DRIVER_TYPE getDefaultDriver(irr::E_DEVICE_TYPE devi
 #endif
 }
 
-irr::IrrlichtDevice* GUIUtils::CreateDevice(GameConfig* configs) {
+std::shared_ptr<irr::IrrlichtDevice> GUIUtils::CreateDevice(GameConfig* configs) {
 	irr::SIrrlichtCreationParameters params{};
 	params.AntiAlias = configs->antialias;
 	params.Vsync = (!EDOPRO_MACOS) && configs->vsync;
@@ -130,6 +128,7 @@ irr::IrrlichtDevice* GUIUtils::CreateDevice(GameConfig* configs) {
 	const auto driver = device->getVideoDriver();
 	if(!driver)
 		throw std::runtime_error("Failed to create video driver!");
+	Utils::irrTimer = device->getTimer();
 #if EDOPRO_ANDROID
 	auto filesystem = device->getFileSystem();
 	// The Android assets file-system does not know which sub-directories it has (blame google).
@@ -182,10 +181,12 @@ irr::IrrlichtDevice* GUIUtils::CreateDevice(GameConfig* configs) {
 		EDOPRO_SetWindowRect(driver->getExposedVideoData().OpenGLOSX.Window, gGameConfig->windowStruct.data());
 #endif
 	device->getLogger()->setLogLevel(irr::ELL_ERROR);
-	return device;
+	return std::shared_ptr<irr::IrrlichtDevice>(device, [](irr::IrrlichtDevice* ptr){
+		ptr->drop();
+	});
 }
 
-void GUIUtils::ChangeCursor(irr::IrrlichtDevice* device, /*irr::gui::ECURSOR_ICON*/ int _icon) {
+void GUIUtils::ChangeCursor(std::shared_ptr<irr::IrrlichtDevice>& device, /*irr::gui::ECURSOR_ICON*/ int _icon) {
 #if !EDOPRO_ANDROID && !EDOPRO_IOS
 	auto icon = static_cast<irr::gui::ECURSOR_ICON>(_icon);
 	auto cursor = device->getCursorControl();
@@ -195,7 +196,7 @@ void GUIUtils::ChangeCursor(irr::IrrlichtDevice* device, /*irr::gui::ECURSOR_ICO
 #endif
 }
 
-bool GUIUtils::TakeScreenshot(irr::IrrlichtDevice* device) {
+bool GUIUtils::TakeScreenshot(std::shared_ptr<irr::IrrlichtDevice>& device) {
 	const auto driver = device->getVideoDriver();
 	const auto image = driver->createScreenShot();
 	if(!image)
@@ -209,8 +210,7 @@ bool GUIUtils::TakeScreenshot(irr::IrrlichtDevice* device) {
 	return written;
 }
 #if (IRRLICHT_VERSION_MAJOR==1 && IRRLICHT_VERSION_MINOR==9)
-void GUIUtils::ToggleFullscreen(irr::IrrlichtDevice* device, bool& fullscreen) {
-	(void)fullscreen;
+void GUIUtils::ToggleFullscreen(std::shared_ptr<irr::IrrlichtDevice>& device, [[maybe_unused]] bool& fullscreen) {
 #if EDOPRO_MACOS
 	EDOPRO_ToggleFullScreen();
 #elif EDOPRO_WINDOWS || EDOPRO_LINUX
@@ -227,8 +227,7 @@ static BOOL CALLBACK callback(HMONITOR hMon, HDC hdc, LPRECT lprcMonitor, LPARAM
 	return TRUE;
 }
 #endif
-void GUIUtils::ToggleFullscreen(irr::IrrlichtDevice* device, bool& fullscreen) {
-	(void)fullscreen;
+void GUIUtils::ToggleFullscreen(std::shared_ptr<irr::IrrlichtDevice>& device, [[maybe_unused]] bool& fullscreen) {
 #if EDOPRO_MACOS
 	EDOPRO_ToggleFullScreen();
 #elif EDOPRO_WINDOWS
@@ -370,7 +369,7 @@ void GUIUtils::ShowErrorWindow(epro::stringview context, epro::stringview messag
 #elif EDOPRO_LINUX
 	const auto* context_cstr = context.data();
 	const auto* message_cstr = message.data();
-	const auto xmessage = fmt::format("{}\n{}", context, message);
+	const auto xmessage = epro::format("{}\n{}", context, message);
 	const auto xmessage_cstr = xmessage.data();
 	auto pid = vfork();
 	if(pid == 0) {
@@ -396,7 +395,7 @@ void GUIUtils::ToggleSwapInterval(irr::video::IVideoDriver* driver, int interval
 	SetSwapInterval(driver, interval);
 }
 
-std::string GUIUtils::SerializeWindowPosition(irr::IrrlichtDevice* device) {
+std::string GUIUtils::SerializeWindowPosition(std::shared_ptr<irr::IrrlichtDevice>& device) {
 #if EDOPRO_WINDOWS
 	auto hWnd = GetWindowHandle(device->getVideoDriver());
 	WINDOWPLACEMENT wp;
@@ -408,6 +407,23 @@ std::string GUIUtils::SerializeWindowPosition(irr::IrrlichtDevice* device) {
 #else
 	return std::string{};
 #endif
+}
+
+void GUIUtils::TriggerEvent(std::shared_ptr<irr::IrrlichtDevice>& device, irr::gui::IGUIElement* target, /*irr::gui::EGUI_EVENT_TYPE*/ int type) {
+	irr::SEvent event;
+	event.EventType = irr::EET_GUI_EVENT;
+	event.GUIEvent.EventType = static_cast<irr::gui::EGUI_EVENT_TYPE>(type);
+	event.GUIEvent.Caller = target;
+	device->postEventFromUser(event);
+}
+
+void GUIUtils::ClickButton(std::shared_ptr<irr::IrrlichtDevice>& device, irr::gui::IGUIElement* btn) {
+	TriggerEvent(device, btn, irr::gui::EGET_BUTTON_CLICKED);
+}
+
+void GUIUtils::SetCheckbox(std::shared_ptr<irr::IrrlichtDevice>& device, irr::gui::IGUICheckBox* chk, bool state) {
+	chk->setChecked(state);
+	TriggerEvent(device, chk, irr::gui::EGET_CHECKBOX_CHANGED);
 }
 
 }

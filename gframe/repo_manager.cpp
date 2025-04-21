@@ -4,11 +4,13 @@
 // Refer to the COPYING file included.
 
 #include "repo_manager.h"
-#include <fmt/format.h>
 #include "game_config.h"
 #include "logging.h"
 #include "utils.h"
 #include "libgit2.hpp"
+#include "fmt.h"
+
+static_assert(LIBGIT2_VER_MAJOR > 0 || LIBGIT2_VER_MINOR >= 23, "libgit2 0.23 or newer is required");
 
 static constexpr int MAX_HISTORY_LENGTH = 100;
 static constexpr int FETCH_OBJECTS_PERCENTAGE = 60;
@@ -26,13 +28,15 @@ namespace ygo {
 // public
 
 bool GitRepo::Sanitize() {
-	if(url.empty())
+	if(!not_git_repo && url.empty())
 		return false;
 
 	if(repo_path.size())
 		repo_path = epro::format("./{}", repo_path);
 
 	if(repo_name.empty() && repo_path.empty()) {
+		if(url.empty())
+			return false;
 		repo_name = Utils::GetFileName(url);
 		if(repo_name.empty())
 			return false;
@@ -74,11 +78,9 @@ RepoManager::RepoManager() {
 	git_libgit2_init();
 	if(gGameConfig->ssl_certificate_path.size() && Utils::FileExists(Utils::ToPathString(gGameConfig->ssl_certificate_path)))
 		git_libgit2_opts(GIT_OPT_SET_SSL_CERT_LOCATIONS, gGameConfig->ssl_certificate_path.data(), "");
-#if EDOPRO_WINDOWS
-	else
-		git_libgit2_opts(GIT_OPT_SET_SSL_CERT_LOCATIONS, "SYSTEM", "");
-#endif
+#if (LIBGIT2_VER_MAJOR>0 || LIBGIT2_VER_MINOR>23)
 	git_libgit2_opts(GIT_OPT_SET_USER_AGENT, ygo::Utils::GetUserAgent().data());
+#endif
 #if (LIBGIT2_VER_MAJOR>0 && LIBGIT2_VER_MINOR>=3) || LIBGIT2_VER_MAJOR>1
 	// disable option introduced with https://github.com/libgit2/libgit2/pull/6266
 	// due how this got backported in older libgitversion as well, and in case
@@ -158,39 +160,25 @@ void RepoManager::LoadRepositoriesFromJson(const nlohmann::json& configs) {
 					continue;
 			}
 			GitRepo tmp_repo;
+			JSON_SET_IF_VALID(not_git_repo, boolean, bool);
 			JSON_SET_IF_VALID(url, string, std::string);
+			if(!tmp_repo.not_git_repo && tmp_repo.url.empty())
+				continue;
 			JSON_SET_IF_VALID(should_update, boolean, bool);
-			if(tmp_repo.url == "default") {
-#ifdef DEFAULT_LIVE_URL
-				tmp_repo.url = DEFAULT_LIVE_URL;
+			JSON_SET_IF_VALID(repo_path, string, std::string);
+			JSON_SET_IF_VALID(repo_name, string, std::string);
+			JSON_SET_IF_VALID(data_path, string, std::string);
+			JSON_SET_IF_VALID(lflist_path, string, std::string);
+			JSON_SET_IF_VALID(script_path, string, std::string);
+			JSON_SET_IF_VALID(pics_path, string, std::string);
+			JSON_SET_IF_VALID(is_language, boolean, bool);
+			if(tmp_repo.is_language)
+				JSON_SET_IF_VALID(language, string, std::string);
 #ifdef YGOPRO_BUILD_DLL
-				tmp_repo.has_core = true;
+			JSON_SET_IF_VALID(has_core, boolean, bool);
+			if(tmp_repo.has_core)
+				JSON_SET_IF_VALID(core_path, string, std::string);
 #endif
-#else
-				continue;
-#endif //DEFAULT_LIVE_URL
-			} else if(tmp_repo.url == "default_anime") {
-#ifdef DEFAULT_LIVEANIME_URL
-				tmp_repo.url = DEFAULT_LIVEANIME_URL;
-#else
-				continue;
-#endif //DEFAULT_LIVEANIME_URL
-			} else {
-				JSON_SET_IF_VALID(repo_path, string, std::string);
-				JSON_SET_IF_VALID(repo_name, string, std::string);
-				JSON_SET_IF_VALID(data_path, string, std::string);
-				JSON_SET_IF_VALID(lflist_path, string, std::string);
-				JSON_SET_IF_VALID(script_path, string, std::string);
-				JSON_SET_IF_VALID(pics_path, string, std::string);
-				JSON_SET_IF_VALID(is_language, boolean, bool);
-				if(tmp_repo.is_language)
-					JSON_SET_IF_VALID(language, string, std::string);
-#ifdef YGOPRO_BUILD_DLL
-				JSON_SET_IF_VALID(has_core, boolean, bool);
-				if(tmp_repo.has_core)
-					JSON_SET_IF_VALID(core_path, string, std::string);
-#endif
-			}
 			if(tmp_repo.Sanitize())
 				AddRepo(std::move(tmp_repo));
 		}
@@ -219,15 +207,28 @@ void RepoManager::TerminateThreads() {
 
 void RepoManager::AddRepo(GitRepo&& repo) {
 	std::lock_guard<epro::mutex> lck(syncing_mutex);
-	if(repos_status.find(repo.repo_path) != repos_status.end())
+	auto path = repo.repo_path;
+	if(repos_status.find(path) != repos_status.end())
 		return;
-	repos_status.emplace(repo.repo_path, 0);
+	repos_status.emplace(path, 0);
 	all_repos.push_front(std::move(repo));
 	auto* _repo = &all_repos.front();
 	available_repos.push_back(_repo);
-	to_sync.push(_repo);
 	all_repos_count++;
-	cv.notify_one();
+	if(_repo->not_git_repo || read_only) {
+		if(!Utils::DirectoryExists(Utils::ToPathString(path + "/"))) {
+			_repo->history.error = epro::format("Folder \"{}\" doesn't exist", path);
+			repos_status[path] = 0;
+		} else {
+			_repo->history.partial_history = { "Local folder" };
+			_repo->history.full_history = { "Local folder" };
+			repos_status[path] = 100;
+		}
+		_repo->internal_ready = true;
+	} else {
+		to_sync.push(_repo);
+		cv.notify_one();
+	}
 }
 
 void RepoManager::SetRepoPercentage(const std::string& path, int percent)
@@ -310,8 +311,7 @@ void RepoManager::CloneOrUpdateTask() {
 						auto commit = Git::MakeUnique(git_commit_lookup, repo.get(), &oid);
 						Git::Check(git_reset(repo.get(), reinterpret_cast<git_object*>(commit.get()),
 											 GIT_RESET_HARD, &checkoutOpts));
-					}
-					catch(const std::exception& e) {
+					} catch(const std::exception& e) {
 						history.partial_history.clear();
 						history.warning = e.what();
 						ErrorLog("Warning occurred in repo {}: {}", url, history.warning);
@@ -338,8 +338,7 @@ void RepoManager::CloneOrUpdateTask() {
 				QueryFullHistory(repo.get(), walker.get());
 			}
 			SetRepoPercentage(path, 100);
-		}
-		catch(const std::exception& e) {
+		} catch(const std::exception& e) {
 			history.error = e.what();
 			ErrorLog("Exception occurred in repo {}: {}", _repo.url, history.error);
 		}
@@ -349,6 +348,7 @@ void RepoManager::CloneOrUpdateTask() {
 	}
 }
 
+template<typename git_indexer_progress>
 int RepoManager::FetchCb(const git_indexer_progress* stats, void* payload) {
 	int percent;
 	if(stats->received_objects != stats->total_objects) {
@@ -364,8 +364,7 @@ int RepoManager::FetchCb(const git_indexer_progress* stats, void* payload) {
 	return pl->rm->fetchReturnValue;
 }
 
-void RepoManager::CheckoutCb(const char* path, size_t completed_steps, size_t total_steps, void* payload) {
-	(void)path;
+void RepoManager::CheckoutCb([[maybe_unused]] const char* path, size_t completed_steps, size_t total_steps, void* payload) {
 	int percent;
 	if(total_steps == 0)
 		percent = CHECKOUT_PERCENTAGE;

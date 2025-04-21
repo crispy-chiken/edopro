@@ -13,7 +13,8 @@ newoption {
 	allowed = {
 		{ "irrklang",  "irrklang" },
 		{ "sdl-mixer",  "SDL2-mixer" },
-		{ "sfml",  "SFML" }
+		{ "sfml",  "SFML" },
+		{ "miniaudio",  "Miniaudio" }
 	}
 }
 newoption {
@@ -62,7 +63,7 @@ newoption {
 }
 newoption {
 	trigger = "no-core",
-	description = "Ignore the ocgcore subproject and only generate the solution for yroprodll"
+	description = "Ignore the ocgcore subproject and only generate the solution for ygoprodll"
 }
 newoption {
 	trigger = "architecture",
@@ -73,10 +74,6 @@ newoption {
 	trigger = "bundled-font",
 	value = "font",
 	description = "Path to a font file that will be bundled in the client and used as fallback font for missing glyphs"
-}
-newoption {
-	trigger = "lua-path",
-	description = "Path where the lua library has been installed"
 }
 
 local function default_arch()
@@ -194,9 +191,7 @@ workspace "ygo"
 	end
 
 	if _OPTIONS["oldwindows"] then
-		filter { "action:vs2015" }
-			toolset "v140_xp"
-		filter { "action:vs*", "action:not vs2015" }
+		filter { "action:vs*" }
 			toolset "v141_xp"
 		filter {}
 	else
@@ -273,11 +268,11 @@ workspace "ygo"
 
 	filter { "configurations:Release*" , "action:not vs*" }
 		symbols "On"
-		defines "NDEBUG"
 
 	filter "configurations:Release"
 		optimize "Size"
 		targetdir "bin/release"
+		defines "NDEBUG"
 
 	filter { "configurations:Release", "action:vs* or system:not windows" }
 		flags "LinkTimeOptimization"

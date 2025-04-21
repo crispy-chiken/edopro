@@ -1,10 +1,10 @@
 #include "single_mode.h"
-#include <fmt/chrono.h>
 #include "game_config.h"
 #include "duelclient.h"
 #include "game.h"
 #include "core_utils.h"
 #include "sound_manager.h"
+#include "fmt.h"
 #include "CGUIFileSelectListBox/CGUIFileSelectListBox.h"
 #include <IrrlichtDevice.h>
 #include <IGUIWindow.h>
@@ -97,7 +97,7 @@ restart:
 	mainGame->dInfo.compat_mode = false;
 	mainGame->dInfo.legacy_race_size = false;
 	mainGame->dInfo.startlp = mainGame->dInfo.lp[0] = mainGame->dInfo.lp[1] = duelOptions.startingLP;
-	mainGame->dInfo.strLP[0] = mainGame->dInfo.strLP[1] = fmt::to_wstring(mainGame->dInfo.lp[0]);
+	mainGame->dInfo.strLP[0] = mainGame->dInfo.strLP[1] = epro::to_wstring(mainGame->dInfo.lp[0]);
 	mainGame->dInfo.selfnames = { mainGame->ebNickName->getText() };
 	mainGame->dInfo.opponames = { L"" };
 	mainGame->dInfo.player_type = 0;
@@ -130,14 +130,14 @@ restart:
 			last_replay.Write<uint32_t>(static_cast<uint32_t>(playerdeck.main.size()), false);
 			for (int32_t i = (int32_t)playerdeck.main.size() - 1; i >= 0; --i) {
 				card_info.code = playerdeck.main[i]->code;
-				OCG_DuelNewCard(pduel, card_info);
+				OCG_DuelNewCard(pduel, &card_info);
 				last_replay.Write<uint32_t>(playerdeck.main[i]->code, false);
 			}
 			card_info.loc = LOCATION_EXTRA;
 			last_replay.Write<uint32_t>(static_cast<uint32_t>(playerdeck.extra.size()), false);
 			for (int32_t i = (int32_t)playerdeck.extra.size() - 1; i >= 0; --i) {
 				card_info.code = playerdeck.extra[i]->code;
-				OCG_DuelNewCard(pduel, card_info);
+				OCG_DuelNewCard(pduel, &card_info);
 				last_replay.Write<uint32_t>(playerdeck.extra[i]->code, false);
 			}
 		};
@@ -155,7 +155,7 @@ restart:
 		if(open_file) {
 			script_name = Utils::ToUTF8IfNeeded(open_file_name);
 			if(!mainGame->LoadScript(pduel, script_name)) {
-				script_name = epro::format("./puzzles/{}" ,script_name);
+				script_name = epro::format("./puzzles/{}", script_name);
 				loaded = mainGame->LoadScript(pduel, script_name);
 			}
 		} else {
@@ -382,7 +382,7 @@ bool SingleMode::SinglePlayAnalyze(CoreUtils::Packet& packet) {
 			case 203: {
 				analyze = true;
 				break;
-			
+
 			}
 			}
 			if(analyze)
@@ -516,7 +516,8 @@ bool SingleMode::SinglePlayAnalyze(CoreUtils::Packet& packet) {
 void SingleMode::SinglePlayRefresh(uint8_t player, uint8_t location, uint32_t flag) {
 	std::vector<uint8_t> buffer;
 	uint32_t len = 0;
-	auto buff = OCG_DuelQueryLocation(pduel, &len, { flag, player, location });
+	OCG_QueryInfo info{ flag, player, location };
+	auto buff = OCG_DuelQueryLocation(pduel, &len, &info);
 	if(len == 0)
 		return;
 	buffer.resize(buffer.size() + len);
@@ -531,7 +532,8 @@ void SingleMode::SinglePlayRefresh(uint8_t player, uint8_t location, uint32_t fl
 void SingleMode::SinglePlayRefreshSingle(uint8_t player, uint8_t location, uint8_t sequence, uint32_t flag) {
 	std::vector<uint8_t> buffer;
 	uint32_t len = 0;
-	auto buff = OCG_DuelQuery(pduel, &len, { flag, player, location, sequence });
+	OCG_QueryInfo info{ flag, player, location, sequence };
+	auto buff = OCG_DuelQuery(pduel, &len, &info);
 	if(buff == nullptr)
 		return;
 	buffer.resize(buffer.size() + len);
